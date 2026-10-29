@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 import Combine
 import C1API
 import OpalCore
@@ -30,6 +31,25 @@ final class StockC1FocusController: ObservableObject {
     private var pendingChange: DispatchWorkItem?
     private var latestPosition: Int32?
     private var positionInFlight = false
+    private var disconnectObserver: NSObjectProtocol?
+
+    init() {
+        // Capture intentionally retains its running intent through a hot unplug.
+        // Observe the physical device separately: a re-enumerated camera with
+        // the same serial must never reuse the old IOKit user-client handle.
+        disconnectObserver = NotificationCenter.default.addObserver(
+            forName: AVCaptureDevice.wasDisconnectedNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, !self.serial.isEmpty,
+                  let device = notification.object as? AVCaptureDevice,
+                  device.localizedName == "Opal C1" else { return }
+            self.disconnect()
+        }
+    }
+
+    deinit {
+        if let disconnectObserver { NotificationCenter.default.removeObserver(disconnectObserver) }
+    }
 
     // Recovered Composer stock/UVC fallback calibration. Its live OCFocus=.456
     // yields truncated lens142, matching the observed camera. Sensor-specific
@@ -65,7 +85,10 @@ final class StockC1FocusController: ObservableObject {
             self.error = error
             if let state {
                 self.accept(state); self.isAvailable = true
-                self.refreshWhiteBalance()
+                // This stock C1 advertises temperature but stalls its GET_CUR.
+                // Do not repeat that unsupported optional request on every USB
+                // arrival; software temperature remains active. A dedicated
+                // diagnostic can explicitly call refreshWhiteBalance().
             }
         }
     }
@@ -208,6 +231,17 @@ private final class StockC1FocusWorker {
     private let queue = DispatchQueue(label: "com.timothyricks.opal.stock-c1-focus", qos: .userInitiated)
     // Access only on queue. Every operation retains the worker until finished.
     private var handle: OpaquePointer?
+    private let epochLock = NSLock()
+    private var epoch: UInt64 = 0
+    private func currentEpoch() -> UInt64 {
+        epochLock.lock(); defer { epochLock.unlock() }; return epoch
+    }
+    private func isCurrent(_ value: UInt64) -> Bool {
+        epochLock.lock(); defer { epochLock.unlock() }; return value == epoch
+    }
+    private func invalidate() {
+        epochLock.lock(); epoch &+= 1; epochLock.unlock()
+    }
 
     func list(completion: @escaping ([C1CameraChoice], String?) -> Void) {
         queue.async {
@@ -226,7 +260,9 @@ private final class StockC1FocusWorker {
         }
     }
     func open(serial: String, completion: @escaping Completion) {
+        let token = currentEpoch()
         queue.async {
+            guard self.isCurrent(token) else { return }
             if let handle = self.handle { stock_c1_close(handle); self.handle = nil }
             var state = StockC1FocusState()
             var error = [CChar](repeating: 0, count: 512)
@@ -253,7 +289,9 @@ private final class StockC1FocusWorker {
         performWhiteBalance(completion) { stock_c1_set_auto_white_balance($0, enabled ? 1 : 0, $1, $2, $3) }
     }
     private func performWhiteBalance(_ completion: @escaping WhiteBalanceCompletion, operation: @escaping (OpaquePointer?, UnsafeMutablePointer<StockC1WhiteBalanceState>, UnsafeMutablePointer<CChar>, Int) -> Int32) {
+        let token = currentEpoch()
         queue.async {
+            guard self.isCurrent(token) else { return }
             var state = StockC1WhiteBalanceState()
             var error = [CChar](repeating: 0, count: 512)
             let okay = operation(self.handle, &state, &error, error.count) != 0
@@ -263,7 +301,9 @@ private final class StockC1FocusWorker {
         }
     }
     private func perform(_ completion: @escaping Completion, operation: @escaping (OpaquePointer?, UnsafeMutablePointer<StockC1FocusState>, UnsafeMutablePointer<CChar>, Int) -> Int32) {
+        let token = currentEpoch()
         queue.async {
+            guard self.isCurrent(token) else { return }
             var state = StockC1FocusState()
             var error = [CChar](repeating: 0, count: 512)
             let okay = operation(self.handle, &state, &error, error.count) != 0
@@ -272,6 +312,7 @@ private final class StockC1FocusWorker {
                 // Show the real lens state after a failed change, including any
                 // autofocus restoration, while retaining the original error.
                 let message = String(cString: error)
+                guard self.isCurrent(token) else { return }
                 var readError = [CChar](repeating: 0, count: 512)
                 let read = stock_c1_read_focus(self.handle, &state, &readError, readError.count) != 0
                 let actual = read ? state : nil
@@ -285,6 +326,9 @@ private final class StockC1FocusWorker {
         DispatchQueue.main.async { completion(value, message) }
     }
     func close(completion: @escaping () -> Void = {}) {
+        // Invalidate synchronously, before the serial close reaches the queue.
+        // A physical detach must cancel queued writes and failure readbacks.
+        invalidate()
         queue.async {
             if let handle = self.handle { stock_c1_close(handle); self.handle = nil }
             DispatchQueue.main.async(execute: completion)

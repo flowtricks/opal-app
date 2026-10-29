@@ -116,7 +116,6 @@ struct ComposerView: View {
         .sheet(isPresented: $showSettings) { ScrollView { settingsPanel.padding(24) }.frame(width: 580, height: 680)
             .sheet(isPresented: $showDiagnostics) { ScrollView { diagnostics.padding(28) }.frame(width: 560, height: 700) }
         }
-        .onChange(of: camera.isRunning) { _, running in if !running { studio.presetPreview.clear(); bridge.disconnect(); loop.stop(); if loop.isRecording { loop.stopRecording() } } }
         .onChange(of: camera.preview) { _, image in if let image, showHistogram || showZebras { analysis.update(image, includeZebra: showZebras) } }
         .onChange(of: showZebras) { _, enabled in if let image = camera.preview { analysis.update(image, includeZebra: enabled) } }
         .onChange(of: showHistogram) { _, enabled in if enabled, let image = camera.preview { analysis.update(image, includeZebra: showZebras) } }
@@ -180,22 +179,22 @@ struct ComposerView: View {
                         .overlay { if showZebras, let zebra = analysis.zebraImage { Image(decorative: zebra, scale: 1).resizable().aspectRatio(contentMode: .fit).allowsHitTesting(false) } }
                         .overlay(alignment: .bottomTrailing) { if showHistogram { histogram.padding(16) } }
                 } else {
-                    Rectangle().fill(Color(white: 0.075)).aspectRatio(16/9, contentMode: .fit)
+                    Rectangle().fill(canvas).aspectRatio(16/9, contentMode: .fit)
                         .overlay {
-                            VStack(spacing: 15) {
-                                if studio.cameraRequested {
-                                    ComposerCameraLoadingView(animate: !reduceMotion).frame(width: 240, height: 240)
-                                        .accessibilityLabel("Connecting to Opal C1")
-                                } else {
+                            if studio.cameraRequested {
+                                ComposerCameraLoadingView(animate: !reduceMotion)
+                                    .frame(width: 300, height: 300)
+                                    .accessibilityLabel("Connecting to Opal C1")
+                            } else {
+                                VStack(spacing: 15) {
                                     Image(systemName: "video.slash").font(.system(size: 34)).foregroundStyle(.white.opacity(0.3))
-                                }
-                                Text(camera.status).font(.system(size: 13)).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                                if studio.cameraRequested {
-                                    Text("Connecting automatically…").font(.system(size: 12)).foregroundStyle(.secondary)
-                                } else {
-                                Button { studio.startCamera() } label: { Text("Start Camera").foregroundStyle(.black).padding(.horizontal, 16).padding(.vertical, 8).background(yellow, in: RoundedRectangle(cornerRadius: 5)) }.buttonStyle(.plain).disabled(studio.cameraBusy || transportTest.isRunning)
-                                }
-                            }.padding(24)
+                                    Text(camera.status).font(.system(size: 13)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                                    Button { studio.startCamera() } label: {
+                                        Text("Start Camera").foregroundStyle(.black).padding(.horizontal, 16).padding(.vertical, 8)
+                                            .background(yellow, in: RoundedRectangle(cornerRadius: 5))
+                                    }.buttonStyle(.plain).disabled(studio.cameraBusy || transportTest.isRunning)
+                                }.padding(24)
+                            }
                         }
                 }
                 HStack(spacing: 12) {

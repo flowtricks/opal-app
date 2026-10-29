@@ -66,3 +66,18 @@ After replacing the Apple Development build with Developer ID signing, the first
 
 Private release: https://github.com/flowtricks/opal-app/releases/tag/v0.1.0-build11
 ZIP SHA-256: `2e17e533624ea6159efdc42501f2287baf2e055fcf8888195419eb9a13b68b59`.
+
+
+## Build 11 reconnect failure and build 12 corrections — 2026-10-29
+
+The final physical replug check on build 11 failed: the same Studio process repeatedly lost capture while IORegistry alternated Opal C1 and Luxonis Bootloader. The original Composer app/helper were off, and Studio's arrival helper logged reuse of the existing process. Camera Off stopped the enumeration loop; the stock C1 then retained the same registry entry. This disproves treating the earlier original-app startup conflict as the complete explanation. Build 11's successful steady-state loopback did not establish reconnect reliability.
+
+Build 12 serializes capture configuration, cancels stale configuration/control operations on detach, waits for physical reconnection, and starts the first-frame watchdog grace after the blocking camera start completes. It removes the automatic optional white-balance probe known to stall on this unit. The virtual-camera bridge lifecycle now belongs to StudioModel and stays connected during requested-source interruptions. Active capture holds a scoped user-initiated latency-critical ProcessInfo activity so macOS App Nap does not throttle background video delivery; it still allows system idle sleep.
+
+Loading now shows only the original alpha-bearing C1 movie over the app canvas, without status text or a Start button while capture is requested. Native AVFoundation inspection confirms premultiplied alpha and transparent corners; the installed movie's SHA-256 equals Composer's resource. Exact original SwiftUI loader dimensions have not been recovered.
+
+Build 12 passed 60 Core and 10 Bridge tests, universal archive, Developer ID signing, Apple notarization, strict signature verification, stapler validation and Gatekeeper assessment. It was installed cleanly and its camera-arrival helper re-registered successfully under parent bundle version 12. Runtime reconnect/background results follow after validation.
+
+Installed build 12 background check: NSRunningApplication independently reported PID 74799 `hidden=true active=false`. From the post-hide checkpoint to the final hidden checkpoint, the independent virtual-camera receiver advanced from 79 to 1,573 frames (about 50 seconds at 30 fps), while capture advanced from 1,210 to 2,700. Capture drops, processing failures, recovery attempts, interruptions, repeated frames, invalid timestamps, alpha-fault frames, and unexpected dimensions all remained zero. Maximum consumer gap over the run was 73.4 ms. This verifies continued local 720p delivery while hidden on this Mac, not sustained Meet/Zoom performance or every resolution.
+
+The distributed ZIP was separately extracted and passed strict deep code-signature verification, stapler validation, and Gatekeeper assessment. Build 12 ZIP SHA-256: `2afb98799b9d1f0aa3a038b79b05b1ac3925f753d3d69d8c228f2a6364785d35`.

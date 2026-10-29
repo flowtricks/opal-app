@@ -65,6 +65,10 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
     private var recoveryStartedNanoseconds: UInt64 = 0
     private var recoveryTimeoutReported = false
     private var recoveryPolicy = CaptureRecoveryPolicy()
+    private var configurationGate = CaptureConfigurationGate()
+    private var sourceConnected = true
+    private var reconnectWork: DispatchWorkItem?
+    private var reconnectPending = false
     private var interruptionActive = false
     // Output queue only.
     private var emissionPolicy = FrameEmissionPolicy()
@@ -88,9 +92,21 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
                 self.stateLock.lock(); let active = self.wantsRunning && !self.externalCapture; let generation = self.runID; self.stateLock.unlock()
                 guard active else { return }
                 if note.name == AVCaptureDevice.wasDisconnectedNotification {
+                    self.reconnectWork?.cancel(); self.reconnectWork = nil
+                    self.stateLock.lock()
+                    self.sourceConnected = false
+                    self.reconnectPending = false
+                    self.configurationGate.invalidate()
+                    self.currentOutput = nil
+                    self.recoveryInFlight = false
+                    self.stateLock.unlock()
+                    // Preserve requested intent and virtual output, but release
+                    // physical control handles subscribed to source liveness.
+                    self.isRunning = false
                     self.status = "Camera disconnected — holding the last complete frame"
                 } else {
-                    self.beginCapture(device.uniqueID, generation: generation)
+                    self.stateLock.lock(); self.sourceConnected = true; self.reconnectPending = true; self.stateLock.unlock()
+                    self.scheduleReconnect(device.uniqueID, generation: generation)
                 }
             })
         }
@@ -103,14 +119,18 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         })
         observerTokens.append(NotificationCenter.default.addObserver(forName: .AVCaptureSessionInterruptionEnded, object: session, queue: .main) { [weak self] _ in
             guard let self else { return }
-            self.stateLock.lock(); let generation = self.runID; let active = self.wantsRunning && !self.externalCapture; self.stateLock.unlock()
-            if active { self.beginCapture(self.selectedDeviceID, generation: generation) }
+            // AVFoundation resumes an interrupted session itself. Rebuilding it
+            // here races its resume/device-connected notification and can stop
+            // healthy capture. The watchdog handles an actual remaining stall.
+            self.stateLock.lock(); let active = self.wantsRunning && !self.externalCapture; self.stateLock.unlock()
+            if active { self.status = "Camera available — waiting for fresh frames…" }
         })
     }
 
     deinit {
         observerTokens.forEach(NotificationCenter.default.removeObserver)
         timer?.cancel()
+        reconnectWork?.cancel()
         session.stopRunning()
     }
 
@@ -137,6 +157,7 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         stateLock.lock()
         guard !wantsRunning else { stateLock.unlock(); return }
         wantsRunning = true; externalCapture = false; activeResolution = pipelineSettings.resolution; runID &+= 1
+        configurationGate.invalidate(); sourceConnected = true; reconnectPending = false
         let generation = runID
         stateLock.unlock()
         status = "Requesting camera access…"
@@ -156,7 +177,8 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
     }
 
     public func stop(completion: (() -> Void)? = nil) {
-        stateLock.lock(); wantsRunning = false; externalCapture = false; runID &+= 1; latch.clear(); currentOutput = nil; stateLock.unlock()
+        reconnectWork?.cancel(); reconnectWork = nil
+        stateLock.lock(); wantsRunning = false; externalCapture = false; runID &+= 1; latch.clear(); currentOutput = nil; configurationGate.invalidate(); reconnectPending = false; stateLock.unlock()
         isRunning = false; preview = nil; status = "Camera stopped"
         outputQueue.async { [weak self] in self?.timer?.cancel(); self?.timer = nil; self?.pendingEmission?.cancel(); self?.pendingEmission = nil }
         sessionQueue.async { [weak self] in
@@ -230,17 +252,50 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         status = text; isRunning = false
     }
 
+    private func scheduleReconnect(_ id: String, generation: UInt64) {
+        reconnectWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isCurrent(generation) else { return }
+            self.reconnectWork = nil
+            self.stateLock.lock()
+            self.reconnectPending = false
+            let recent = self.lastRawNanoseconds > 0 && DispatchTime.now().uptimeNanoseconds - self.lastRawNanoseconds < 1_000_000_000
+            let configuring = self.configurationGate.active != nil
+            self.stateLock.unlock()
+            guard !configuring, !(self.isRunning && recent) else { return }
+            self.beginCapture(id, generation: generation)
+        }
+        reconnectWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func isCurrentConfiguration(_ ticket: CaptureConfigurationGate.Ticket, generation: UInt64) -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return wantsRunning && runID == generation && sourceConnected && configurationGate.isValid(ticket)
+    }
+
     private func beginCapture(_ id: String, generation: UInt64, recovering: Bool = false) {
+        stateLock.lock()
+        guard wantsRunning, runID == generation, sourceConnected,
+              let ticket = configurationGate.begin() else {
+            if recovering && runID == generation { recoveryInFlight = false }
+            stateLock.unlock(); return
+        }
+        currentOutput = nil
+        lastRawNanoseconds = 0
+        stateLock.unlock()
         status = recovering ? "Camera stalled — attempting recovery…" : "Starting camera…"
         sessionQueue.async { [weak self] in
-            guard let self, self.isCurrent(generation) else { return }
+            guard let self else { return }
             defer {
-                if recovering {
-                    self.stateLock.lock()
-                    if self.runID == generation { self.recoveryInFlight = false }
-                    self.stateLock.unlock()
+                self.stateLock.lock()
+                if self.configurationGate.isValid(ticket) && self.runID == generation {
+                    self.configurationGate.finish(ticket)
+                    if recovering { self.recoveryInFlight = false }
                 }
+                self.stateLock.unlock()
             }
+            guard self.isCurrentConfiguration(ticket, generation: generation) else { return }
             do {
                 self.stateLock.lock(); let resolution = self.activeResolution; self.stateLock.unlock()
                 guard let device = AVCaptureDevice(uniqueID: id) else { throw CaptureError.noDevice }
@@ -294,7 +349,15 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
                     output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
                                             kCVPixelBufferWidthKey as String: resolution.width,
                                             kCVPixelBufferHeightKey as String: resolution.height]
-                    self.stateLock.lock(); self.currentOutput = output; self.stateLock.unlock()
+                    self.stateLock.lock()
+                    guard self.wantsRunning, self.runID == generation, self.sourceConnected,
+                          self.configurationGate.isValid(ticket) else {
+                        self.stateLock.unlock()
+                        self.session.commitConfiguration()
+                        return
+                    }
+                    self.currentOutput = output
+                    self.stateLock.unlock()
                 } catch { self.session.commitConfiguration(); throw error }
                 self.session.commitConfiguration()
                 self.captureDevice = device
@@ -303,7 +366,7 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
                 let settings = self.pipelineSettings; self.stateLock.unlock()
                 self.applyHardwareControls(settings)
                 self.processingQueue.async { [weak self] in self?.processor = EffectsProcessor(resolution: resolution) }
-                guard self.isCurrent(generation) else { return }
+                guard self.isCurrentConfiguration(ticket, generation: generation) else { return }
                 self.session.startRunning()
                 guard self.session.isRunning else { throw CaptureError.noInput }
                 let negotiated = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
@@ -312,31 +375,42 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
                     throw CaptureError.unsupportedResolution(resolution)
                 }
                 self.stateLock.lock()
+                // startRunning may block during USB recovery. Give the newly
+                // negotiated source its full first-frame grace period, rather
+                // than immediately treating that blocked time as another stall.
+                self.runStartedNanoseconds = DispatchTime.now().uptimeNanoseconds
                 self.stats.events.append("Sensor format \(negotiated.width) × \(negotiated.height); requested output \(resolution.width) × \(resolution.height).")
                 self.stateLock.unlock()
-                guard self.isCurrent(generation) else { self.session.stopRunning(); return }
+                guard self.isCurrentConfiguration(ticket, generation: generation) else { self.session.stopRunning(); return }
                 self.startOutput(generation: generation)
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.isCurrent(generation) else { return }
+                    guard let self, self.isCurrentConfiguration(ticket, generation: generation) else { return }
                     self.isRunning = true; self.status = "Live · \(resolution.width) × \(resolution.height) · 30 fps"
                 }
             } catch {
+                guard self.isCurrentConfiguration(ticket, generation: generation) else { return }
                 let detail = "\(error.localizedDescription) Waiting for the camera to become available. Close any other app using the C1; capture will resume automatically."
                 if recovering {
                     self.stateLock.lock(); self.stats.lastError = detail; self.stateLock.unlock()
                     DispatchQueue.main.async { [weak self] in
-                        guard let self, self.isCurrent(generation) else { return }
+                        guard let self, self.isCurrentConfiguration(ticket, generation: generation) else { return }
                         self.status = "Camera recovery failed. Reconnect the camera or restart capture."
                     }
                 } else {
-                    DispatchQueue.main.async { [weak self] in self?.failStart(detail, generation: generation) }
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.isCurrentConfiguration(ticket, generation: generation) else { return }
+                        self.failStart(detail, generation: generation)
+                    }
                 }
             }
         }
     }
 
     private func applyHardwareControls(_ settings: CameraSettings) {
-        guard let device = captureDevice else { return }
+        stateLock.lock()
+        let available = sourceConnected && wantsRunning && !externalCapture
+        stateLock.unlock()
+        guard available, let device = captureDevice else { return }
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
@@ -487,7 +561,8 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         }
         let recover = recoveryPolicy.shouldRestart(now: now, rawAgeMilliseconds: rawAge,
                                                     processedAgeMilliseconds: goodAge,
-                                                    external: externalCapture, recoveryInFlight: recoveryInFlight)
+                                                    external: externalCapture, deviceConnected: sourceConnected,
+                                                    recoveryInFlight: recoveryInFlight || configurationGate.active != nil || reconnectPending)
         if recover {
             stats.recoveryAttempts += 1; recoveryInFlight = true
             recoveryStartedNanoseconds = now; recoveryTimeoutReported = false

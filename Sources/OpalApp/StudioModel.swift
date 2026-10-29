@@ -57,6 +57,7 @@ final class StudioModel: ObservableObject {
     private var startupRetry: AnyCancellable?
     private var subscriptions = Set<AnyCancellable>()
     private let defaults = UserDefaults.standard
+    private var captureActivity: NSObjectProtocol?
     private var lastRequestedFocus: String?
     private var lastRequestedWhiteBalance: String?
     init() {
@@ -93,6 +94,23 @@ final class StudioModel: ObservableObject {
         }.store(in: &subscriptions)
         camera.$isRunning.combineLatest(camera.$selectedDeviceID).receive(on: RunLoop.main).sink { [weak self] _, _ in
             self?.refreshStockFocusConnection()
+        }.store(in: &subscriptions)
+        // Capture/output lifecycle belongs to the model, even when no main
+        // window is visible. A physical reconnect must not disconnect the
+        // virtual camera or depend on SwiftUI receiving a view-state change.
+        camera.$isRunning.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] running in
+            guard let self else { return }
+            self.setCaptureActivity(running)
+            if running {
+                if self.cameraRequested && !self.bridge.isConnected { self.connectVirtualCamera() }
+            } else {
+                self.presetPreview.clear()
+                if !self.cameraRequested {
+                    self.bridge.disconnect()
+                    self.loop.stop()
+                    if self.loop.isRecording { self.loop.stopRecording() }
+                }
+            }
         }.store(in: &subscriptions)
         stockFocus.$isAvailable.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] available in
             guard let self, available else { return }
@@ -143,6 +161,19 @@ final class StudioModel: ObservableObject {
             self.bridge.send(outgoing, presentationTime: time)
             self.recordingCapture.appendCamera(outgoing, time: time)
         }
+    }
+    private func setCaptureActivity(_ active: Bool) {
+        if active, captureActivity == nil {
+            captureActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                reason: "Delivering live camera video to calling applications")
+        } else if !active, let activity = captureActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            captureActivity = nil
+        }
+    }
+    deinit {
+        if let activity = captureActivity { ProcessInfo.processInfo.endActivity(activity) }
     }
     var cameraBusy: Bool { c1.isConnecting || c1.isClosing }
     private func refreshStockFocusConnection() {

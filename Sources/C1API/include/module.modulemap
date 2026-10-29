@@ -1,0 +1,5 @@
+module C1API {
+  header "C1Bridge.h"
+  header "StockC1Control.h"
+  export *
+}

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Opal Studio Camera</string>
+	<key>CFBundleExecutable</key>
+	<string>CameraExtension</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.timothyricks.opal-app.camera</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Opal Studio Camera</string>
+	<key>CFBundlePackageType</key>
+	<string>SYSX</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>5</string>
+	<key>CMIOExtension</key>
+	<dict>
+		<key>CMIOExtensionMachServiceName</key>
+		<string>G766RX9X84.com.timothyricks.opal-app.camera</string>
+	</dict>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSSystemExtensionUsageDescription</key>
+	<string>Send your processed camera video to meeting apps through Opal Studio Camera.</string>
+</dict>
+</plist>

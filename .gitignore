@@ -1,0 +1,36 @@
+.build/
+build/
+dist/
+.DS_Store
+*.log
+*.xcuserstate
+xcuserdata/
+*.provisionprofile
+*.mobileprovision
+*.p12
+*.p8
+*.key
+.env
+.env.*
+!.env.example
+.build-tools/
+.analysis-tools/
+.swiftpm/
+vendor/
+__pycache__/
+# Local reverse-engineering sessions and extracted reference artifacts.
+# Keep the written findings; raw binary evidence stays on the development Mac.
+research/*
+!research/*.md
+!research/effects/
+research/effects/*
+!research/effects/README.md
+!research/filters/
+research/filters/*
+!research/filters/README.md
+!research/lighting/
+research/lighting/*
+!research/lighting/README.md
+!research/lighting-followup/
+research/lighting-followup/*
+!research/lighting-followup/README.md

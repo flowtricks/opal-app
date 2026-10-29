@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Opal Studio</string>
+	<key>CFBundleExecutable</key>
+	<string>OpalStudio</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.timothyricks.opal-app</string>
+	<key>CFBundleName</key>
+	<string>Opal Studio</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>11</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
+	<key>NSCameraPortraitEffectEnabled</key>
+	<false/>
+	<key>NSCameraReactionEffectsEnabled</key>
+	<false/>
+	<key>NSCameraStudioLightEnabled</key>
+	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Opal Studio processes your C1 camera locally for preview, background blur, and virtual camera output.</string>
+	<key>NSCameraUseContinuityCameraDeviceType</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Include your microphone in recordings saved on this Mac.</string>
+	<key>NSSystemExtensionUsageDescription</key>
+	<string>Opal Studio installs a virtual camera so meeting apps can receive your processed video.</string>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>com.apple.package</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Opal Composer Preset</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.opalcamera.opb</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>opalPreset</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; media-src blob:; connect-src 'none'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Opal Studio — local WebRTC check</title>
+<style>
+:root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; background: #151619; color: #eee; }
+body { margin: auto; padding: 28px; max-width: 1250px; }
+h1 { font-size: 1.6rem; margin: 0 0 8px; } h2 { font-size: 1.1rem; }
+p { max-width: 90ch; color: #c7c9ce; }
+.controls { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin: 24px 0 16px; }
+label { display: grid; gap: 6px; }
+select, button { font: inherit; padding: 9px 12px; border: 1px solid #72757e; border-radius: 5px; background: #292b31; color: white; }
+select { max-width: 420px; } button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
+:focus-visible { outline: 3px solid #f8dc54; outline-offset: 3px; }
+#start { background: #e4cb49; color: #151619; } #status { min-height: 1.5em; padding: 12px; background: #24262c; border-left: 4px solid #e4cb49; }
+.videos { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+video { width: 100%; aspect-ratio: 16/9; background: black; border-radius: 5px; object-fit: contain; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; margin-top: 20px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #3b3e45; } th { width: 42%; font-weight: 500; }
+caption { text-align: left; font-weight: 700; padding: 10px 0; } .muted, small { color: #acb0ba; } #error { color: #ffb8b8; white-space: pre-wrap; }
+@media (max-width: 740px) { body { padding: 16px; } .videos { grid-template-columns: 1fr; } select { max-width: 100%; } }
+</style>
+</head>
+<body>
+<h1>Local WebRTC camera check</h1>
+<p>Select <strong>Opal Studio Camera</strong>, then Start. The left video is the camera source; the right is the video encoded and decoded through a WebRTC connection within this page. No STUN/TURN servers, remote peers, microphone, recording, images, or uploads are used.</p>
+<p class="muted">Serve this file from <code>http://localhost</code> or <code>http://127.0.0.1</code> in Chrome or Edge. This checks a browser conferencing pipeline; it does not prove behavior in an actual Meet or Zoom call. Stop releases the camera and both peer connections.</p>
+<div class="controls">
+<label for="camera">Camera<select id="camera"><option value="">Choose a camera</option></select></label>
+<label for="resolution">Maximum requested resolution<select id="resolution"><option value="720">1280 × 720</option><option value="1080">1920 × 1080</option><option value="2160">3840 × 2160 (4K)</option></select></label>
+<button id="permission" type="button">Enable local camera access</button>
+<button id="refresh" type="button">Refresh cameras</button>
+<button id="start" type="button" disabled>Start local test</button>
+<button id="stop" type="button" disabled>Stop and release camera</button>
+</div>
+<p class="muted">If the camera list is empty or names are hidden, Enable local camera access briefly opens the browser’s default camera to request permission, then immediately stops every track and refreshes the list. It does not start the WebRTC test or request microphone access.</p>
+<p id="status" role="status" aria-live="polite">Camera is stopped. Refresh the list if the extension was just installed.</p>
+<p id="error" role="alert"></p>
+<div class="videos">
+<section aria-labelledby="source-heading"><h2 id="source-heading">Camera source</h2><video id="source" autoplay muted playsinline aria-label="Local camera source preview"></video></section>
+<section aria-labelledby="received-heading"><h2 id="received-heading">WebRTC received video</h2><video id="received" autoplay muted playsinline aria-label="Local WebRTC received preview"></video></section>
+</div>
+<table aria-label="WebRTC diagnostics"><caption>Live diagnostics — refreshed once per second</caption><tbody id="metrics"></tbody></table>
+<p class="muted">The resolution above is a maximum and preferred size. Actual capture and received dimensions are shown separately; a smaller result is reported rather than presented as 4K. Browser preview frame counters are separate from WebRTC decoder counters. Jitter and frame drops do not measure visual flicker directly.</p>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const camera = $('camera'), resolution = $('resolution'), startButton = $('start'), stopButton = $('stop');
+const sourceVideo = $('source'), receivedVideo = $('received');
+const rows = [
+ ['state', 'Connection state'], ['device', 'Selected source'], ['requested', 'Requested maximum'],
+ ['capture', 'Actual camera settings'], ['receivedSize', 'Actual received dimensions'], ['codec', 'Received codec'],
+ ['encoded', 'Sender frames encoded'], ['sent', 'Sender frames sent'], ['decoded', 'Receiver frames decoded'],
+ ['dropped', 'Receiver frames dropped'], ['fps', 'Receiver frames per second'], ['packetsLost', 'Receiver packets lost'],
+ ['jitter', 'RTP interarrival jitter'], ['bufferDelay', 'Average jitter buffer delay'], ['freeze', 'Receiver freeze count'],
+ ['sourceFrames', 'Source preview frames / drops'], ['receiveFrames', 'Received preview frames / drops'],
+ ['transport', 'Selected ICE candidate types'], ['updated', 'Last statistics update'], ['statsTime', 'Receiver statistics timestamp']
+];
+const values = {};
+for (const [id, title] of rows) {
+ const row = document.createElement('tr'), th = document.createElement('th'), td = document.createElement('td');
+ th.scope = 'row'; th.textContent = title; td.textContent = '—'; row.append(th, td); $('metrics').append(row); values[id] = td;
+}
+let session = null, generation = 0, starting = false, authorizing = false;
+const display = (key, value) => { values[key].textContent = value ?? 'Not reported'; };
+const number = (value, suffix = '', digits = 0) => Number.isFinite(value) ? value.toFixed(digits) + suffix : 'Not reported';
+function status(message) { $('status').textContent = message; }
+function updateButtons() {
+ startButton.disabled = starting || authorizing || !!session || !camera.value;
+ stopButton.disabled = !starting && !authorizing && !session;
+ camera.disabled = starting || authorizing || !!session; resolution.disabled = starting || authorizing || !!session;
+ $('refresh').disabled = starting || authorizing || !!session;
+ $('permission').disabled = starting || authorizing || !!session;
+}
+function fail(error) { $('error').textContent = `${error.name || 'Error'}: ${error.message || String(error)}`; }
+async function refreshCameras() {
+ if (!navigator.mediaDevices?.enumerateDevices) { status('Camera access is unavailable here. Open this page through localhost in a supported browser.'); return; }
+ try {
+  const previous = camera.value;
+  const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput' && device.deviceId);
+  camera.replaceChildren(new Option('Choose a camera', ''));
+  devices.forEach((device, index) => camera.add(new Option(device.label || `Camera ${index + 1} (label requires browser permission)`, device.deviceId)));
+  const preferred = devices.find(device => device.deviceId === previous) || devices.find(device => /opal studio camera/i.test(device.label));
+  if (preferred) camera.value = preferred.deviceId;
+  if (!devices.length) status('No camera devices are listed. Install/enable the extension, then refresh.');
+  else if (devices.every(device => !device.label)) status('The browser has hidden camera names until permission is granted. Use Enable local camera access to identify the correct camera before Start.');
+  updateButtons();
+ } catch (error) { fail(error); }
+}
+async function enableCameraAccess() {
+ if (starting || authorizing || session) return;
+ if (!navigator.mediaDevices?.getUserMedia) { status('Camera permission requests are unavailable. Use localhost in a browser that supports camera access.'); return; }
+ const token = ++generation;
+ authorizing = true; $('error').textContent = ''; updateButtons();
+ status('Requesting permission using the default camera. Its tracks will be stopped immediately; the test will remain stopped.');
+ let temporaryStream, error;
+ try {
+  temporaryStream = await navigator.mediaDevices.getUserMedia({video: true, audio: false});
+ } catch (reason) { error = reason; }
+ finally { temporaryStream?.getTracks().forEach(track => track.stop()); }
+ if (generation !== token) return;
+ authorizing = false; updateButtons();
+ if (error) {
+  status('Camera access was not granted. No camera is running. Check this site’s camera permission and try again.');
+  fail(error); return;
+ }
+ await refreshCameras();
+ if (generation !== token) return;
+ status(camera.options.length > 1
+  ? 'Permission granted; temporary camera access is stopped. Select Opal Studio Camera, then Start local test.'
+  : 'Permission granted and temporary tracks stopped, but this browser lists no cameras. Try Chrome or Edge and check camera permissions.');
+}
+function stop(message = 'Stopped. Camera tracks and local peer connections have been released.') {
+ generation += 1; starting = false; authorizing = false;
+ const old = session; session = null;
+ if (old) {
+  old.stopped = true; clearTimeout(old.timer);
+  for (const track of old.stream?.getTracks() || []) { track.onended = null; track.stop(); }
+  for (const peer of [old.sender, old.receiver]) {
+   if (!peer) continue;
+   peer.onicecandidate = null; peer.ontrack = null; peer.onconnectionstatechange = null; peer.close();
+  }
+ }
+ sourceVideo.srcObject = null; receivedVideo.srcObject = null;
+ display('state', 'Stopped'); status(message); updateButtons();
+}
+function previewCounters(video) {
+ if (!video.getVideoPlaybackQuality) return 'Not reported';
+ const quality = video.getVideoPlaybackQuality();
+ return `${quality.totalVideoFrames} / ${quality.droppedVideoFrames}`;
+}
+async function sampleStats(current) {
+ if (session !== current || current.stopped) return;
+ try {
+  const [incoming, outgoing] = await Promise.all([current.receiver.getStats(), current.sender.getStats()]);
+  if (session !== current) return;
+  const inbound = [...incoming.values()].find(report => report.type === 'inbound-rtp' && (report.kind === 'video' || report.mediaType === 'video') && !report.isRemote);
+  const outbound = [...outgoing.values()].find(report => report.type === 'outbound-rtp' && (report.kind === 'video' || report.mediaType === 'video') && !report.isRemote);
+  display('state', `${current.sender.connectionState} → ${current.receiver.connectionState}`);
+  const settings = current.stream.getVideoTracks()[0]?.getSettings() || {};
+  display('capture', `${settings.width ?? '?'} × ${settings.height ?? '?'} · ${number(settings.frameRate, ' fps', 2)}`);
+  display('encoded', number(outbound?.framesEncoded)); display('sent', number(outbound?.framesSent));
+  display('sourceFrames', previewCounters(sourceVideo)); display('receiveFrames', previewCounters(receivedVideo));
+  display('updated', new Date().toLocaleTimeString(undefined, {hour12: false}) + `.${String(new Date().getMilliseconds()).padStart(3, '0')}`);
+  if (inbound) {
+   const codec = incoming.get(inbound.codecId);
+   display('codec', codec ? `${codec.mimeType}${codec.sdpFmtpLine ? ' · ' + codec.sdpFmtpLine : ''}` : 'Not reported');
+   display('receivedSize', `${inbound.frameWidth ?? receivedVideo.videoWidth} × ${inbound.frameHeight ?? receivedVideo.videoHeight}`);
+   display('decoded', number(inbound.framesDecoded)); display('dropped', number(inbound.framesDropped));
+   display('packetsLost', number(inbound.packetsLost)); display('freeze', number(inbound.freezeCount));
+   display('jitter', number(inbound.jitter * 1000, ' ms', 3));
+   display('bufferDelay', inbound.jitterBufferEmittedCount > 0 ? number(inbound.jitterBufferDelay / inbound.jitterBufferEmittedCount * 1000, ' ms', 3) : 'Not reported');
+   let fps = inbound.framesPerSecond;
+   const previous = current.previousInbound;
+   if (!Number.isFinite(fps) && previous && inbound.timestamp > previous.timestamp) fps = (inbound.framesDecoded - previous.framesDecoded) * 1000 / (inbound.timestamp - previous.timestamp);
+   display('fps', number(fps, ' fps', 2));
+   display('statsTime', Number.isFinite(inbound.timestamp) ? new Date(inbound.timestamp).toISOString() : 'Not reported');
+   current.previousInbound = inbound;
+  }
+  const transport = [...incoming.values()].find(report => report.type === 'transport' && report.selectedCandidatePairId);
+  const pair = transport ? incoming.get(transport.selectedCandidatePairId) : [...incoming.values()].find(report => report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated);
+  if (pair) {
+   const local = incoming.get(pair.localCandidateId), remote = incoming.get(pair.remoteCandidateId);
+   display('transport', `${local?.candidateType ?? '?'} ↔ ${remote?.candidateType ?? '?'} · ${local?.protocol ?? '?'} (same-page peers, no ICE servers)`);
+  }
+ } catch (error) { if (session === current) fail(error); }
+ if (session === current) current.timer = setTimeout(() => sampleStats(current), 1000);
+}
+async function start() {
+ if (starting || authorizing || session || !camera.value) return;
+ const token = ++generation; starting = true; $('error').textContent = '';
+ Object.values(values).forEach(cell => { cell.textContent = '—'; });
+ updateButtons(); status('Requesting the explicitly selected camera. No microphone is requested.');
+ const height = Number(resolution.value), width = height * 16 / 9, selectedId = camera.value;
+ let stream;
+ try {
+  const constraints = {deviceId: {exact: selectedId}, width: {ideal: width, max: width}, height: {ideal: height, max: height}, frameRate: {ideal: 30, max: 30}};
+  if (navigator.mediaDevices.getSupportedConstraints().resizeMode) constraints.resizeMode = 'none';
+  stream = await navigator.mediaDevices.getUserMedia({video: constraints, audio: false});
+  if (generation !== token) { stream.getTracks().forEach(track => track.stop()); return; }
+  const sender = new RTCPeerConnection({iceServers: []}), receiver = new RTCPeerConnection({iceServers: []});
+  const current = {stream, sender, receiver, timer: null, stopped: false, previousInbound: null};
+  session = current; starting = false; updateButtons();
+  display('requested', `${width} × ${height} · at most 30 fps`);
+  display('device', stream.getVideoTracks()[0].label || camera.selectedOptions[0].textContent);
+  sourceVideo.srcObject = stream;
+  const pendingSender = [], pendingReceiver = [];
+  async function candidateTo(peer, candidate, pending) {
+   if (!candidate || session !== current) return;
+   if (!peer.remoteDescription) { pending.push(candidate); return; }
+   try { await peer.addIceCandidate(candidate); } catch (error) { if (session === current) fail(error); }
+  }
+  sender.onicecandidate = event => candidateTo(receiver, event.candidate, pendingReceiver);
+  receiver.onicecandidate = event => candidateTo(sender, event.candidate, pendingSender);
+  receiver.ontrack = event => { if (session === current) receivedVideo.srcObject = event.streams[0] || new MediaStream([event.track]); };
+  const stateChanged = () => {
+   if (session !== current) return;
+   if ([sender.connectionState, receiver.connectionState].includes('failed')) status('Local WebRTC connection failed. Inspect diagnostics, then Stop and retry.');
+   else if (receiver.connectionState === 'connected') status('Local WebRTC loopback is connected. Compare the source and received images; counters update below.');
+  };
+  sender.onconnectionstatechange = stateChanged; receiver.onconnectionstatechange = stateChanged;
+  for (const track of stream.getVideoTracks()) {
+   track.onended = () => { if (session === current) stop('The camera track ended. The test has stopped and released its connections.'); };
+   sender.addTrack(track, stream);
+  }
+  await sender.setLocalDescription(await sender.createOffer());
+  if (session !== current) return;
+  await receiver.setRemoteDescription(sender.localDescription);
+  for (const candidate of pendingReceiver.splice(0)) await receiver.addIceCandidate(candidate);
+  await receiver.setLocalDescription(await receiver.createAnswer());
+  if (session !== current) return;
+  await sender.setRemoteDescription(receiver.localDescription);
+  for (const candidate of pendingSender.splice(0)) await sender.addIceCandidate(candidate);
+  if (session !== current) return;
+  status('Local peers are connecting. All media stays between these two connections in this browser.');
+  sampleStats(current);
+ } catch (error) {
+  if (generation !== token) { stream?.getTracks().forEach(track => track.stop()); return; }
+  stop('Test could not start. No camera track is left running.');
+  stream?.getTracks().forEach(track => track.stop()); fail(error);
+ }
+}
+$('permission').addEventListener('click', enableCameraAccess);
+$('refresh').addEventListener('click', refreshCameras);
+startButton.addEventListener('click', start); stopButton.addEventListener('click', () => stop());
+camera.addEventListener('change', updateButtons);
+window.addEventListener('pagehide', () => stop());
+if (navigator.mediaDevices?.addEventListener) navigator.mediaDevices.addEventListener('devicechange', () => { if (!session && !starting && !authorizing) refreshCameras(); });
+refreshCameras(); // Enumerates only; permission/capture begins solely on Start.
+</script>
+</body>
+</html>

@@ -198,7 +198,7 @@ public struct CameraSettings: Codable, Equatable, Sendable {
         value.zoom = clamp(zoom, 1...3, 1)
         value.focusPosition = clamp(focusPosition, 0...1, 0.5)
         value.colorBands = Array(colorBands.prefix(8)).map {
-            ColorBandAdjustment(hueOffset: clamp($0.hueOffset, -60...60, 0),
+            ColorBandAdjustment(hueOffset: clamp($0.hueOffset, -360...360, 0),
                                 saturation: clamp($0.saturation, 0...2, 1),
                                 brightness: clamp($0.brightness, 0...2, 1))
         }

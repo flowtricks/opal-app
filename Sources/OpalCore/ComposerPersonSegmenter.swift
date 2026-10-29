@@ -74,7 +74,7 @@ public final class ComposerPersonSegmenter {
             }
             lastInferenceError = nil
             let rawMask = CIImage(cvPixelBuffer: buffer, options: [.colorSpace: NSNull()])
-            return try Self.resizedMask(rawMask, to: bounds)
+            return try Self.refinedMask(Self.resizedMask(rawMask, to: bounds), to: bounds)
         } catch {
             lastInferenceError = error
             return Self.foregroundMask(in: bounds)
@@ -88,6 +88,13 @@ public final class ComposerPersonSegmenter {
             arguments: ["inputBounds": mask.extent, "outputBounds": bounds])
     }
 
+    // Original SegmenterFilter's Apple branch follows the half-float resize
+    // with a full-size R8 pass before supplying all consuming filters.
+    static func refinedMask(_ mask: CIImage, to bounds: CGRect) throws -> CIImage {
+        try ComposerAppleMaskQuantize.apply(withExtent: bounds, inputs: [mask],
+            arguments: ["inputBounds": mask.extent, "outputBounds": bounds])
+    }
+
     private static func foregroundMask(in bounds: CGRect) -> CIImage {
         CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1)).cropped(to: bounds)
     }
@@ -97,7 +104,7 @@ public final class ComposerPersonSegmenter {
     }
 }
 
-private final class ComposerAppleMaskResize: CIImageProcessorKernel {
+private class ComposerAppleMaskResize: CIImageProcessorKernel {
     override class var synchronizeInputs: Bool { false }
     override class var outputFormat: CIFormat { .Rh }
     override class func formatForInput(at inputIndex: Int32) -> CIFormat { .Rh }
@@ -119,4 +126,8 @@ private final class ComposerAppleMaskResize: CIImageProcessorKernel {
         try shaders.encode(fragment: "metalpetal::passthrough", inputs: [source], buffers: [],
                            destination: destination, commandBuffer: command, textureRegion: region, samplerState: sampler)
     }
+}
+
+private final class ComposerAppleMaskQuantize: ComposerAppleMaskResize {
+    override class var outputFormat: CIFormat { .R8 }
 }

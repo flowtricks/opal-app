@@ -435,7 +435,7 @@ struct ComposerView: View {
                     }.buttonStyle(.plain).accessibilityLabel(ColorBandAdjustment.names[index])
                 }
             }
-            slider("Hue", value: band(\.hueOffset), range: -60...60, format: "%.0f%%", colors: [bandColors[(selectedBand + 7) % 8], bandColors[selectedBand], tintedBand((selectedBand + 1) % 8, white: 0.3)], center: 0)
+            slider("Hue", value: Binding(get: { camera.settings.colorBands[selectedBand].hueOffset / 3.6 }, set: { camera.settings.colorBands[selectedBand].hueOffset = $0 * 3.6 }), range: -100...100, format: "%.0f%%", colors: [bandColors[(selectedBand + 7) % 8], bandColors[selectedBand], tintedBand((selectedBand + 1) % 8, white: 0.3)], center: 0)
             slider("Saturation", value: scaledBand(\.saturation), range: 0...200, format: "%.0f%%", colors: [.white, tintedBand(selectedBand, white: 0.26)])
             slider("Brightness", value: scaledBand(\.brightness), range: 0...100, format: "%.0f%%", stops: [.init(color: .black, location: 0), .init(color: bandColors[selectedBand], location: 0.5), .init(color: tintedBand(selectedBand, white: 0.7), location: 0.5), .init(color: tintedBand(selectedBand, white: 0.7), location: 1)])
         }

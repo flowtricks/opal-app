@@ -121,3 +121,37 @@ stack byte, and0x01942c assigns the CameraModulePipeline FXAA enabled flag.
 Thus the default is **off**. Device-reported module capabilities may override
 that value; this audit has not read the live hardware capability response and
 does not justify globally enabling FXAA on all cameras.
+
+## Full upstream audit after live halo report
+
+The earlier half-float-only mask claim was incomplete. Apple inference returns
+R16Half, but SegmenterFilter then processes it through its Apple branch at
+0x00deb0...0x00dee8: linear resize at the same source dimensions with **R8Unorm**
+output. At0x018d34...40 this result is stored in BokehFilter.mask+0x30; the same
+result is assigned to TouchUp+0x28 and ToneSync+0x60 at0x018d68/0x018d88.
+Production now preserves the R16 intermediate and performs this final native
+R8 pass. All three consumers request R8 directly, rather than re-quantizing to
+half-float. Independent native-oracle fixtures use actual R8 masks with partial
+coverage. Eight targeted tests pass (`build/native-r8-mask-tests.log`). This
+fixes a real boundary mismatch but does not alone prove the observed live halo
+has been resolved.
+
+The upstream source has no discovered hidden blur-resolution multiplier:
+UVC maps CVPixelBuffer plane dimensions directly; XPC0x02cf38...0x02cf88 feeds
+these into the custom YUV conversion and requests BGRA8 output. The rendered
+raw texture is reused for both the graph and segmentation at0x02d2e8...d394.
+Vision's `createCIImageFromImage` bridge0x09f43c uses default
+MTICIImageCreationOptions;0x0a51ec...0x0a5214 selects DeviceRGB and flip=true.
+The bridge itself does not resize. Apple result resize0x029914...0x029930 uses
+that CIImage's width/height. Bokeh radius0x010cdc...0x010ce4 is raw radius times
+strength. Strength defaults1 (constant0x18daf0) and is driven through a startup
+transition by0x0324d0, eventually reaching1; it is not a resolution multiplier.
+
+`vision-colorspace-bridge.swift` compares the original DeviceRGB-tagged encoded
+input against the same sRGB-tagged colors and an explicit encoded-to-DeviceRGB
+conversion on this Mac. All256 test colors render identically to DeviceRGB
+RGBA8 (zero differing bytes). Therefore the names of those spaces alone do not
+establish a missing color conversion or justify an additional full-frame GPU
+materialization. A live person, frame synchronization, same physical focus and
+capture format must still be compared; independent shader oracles do not prove
+full application image parity.

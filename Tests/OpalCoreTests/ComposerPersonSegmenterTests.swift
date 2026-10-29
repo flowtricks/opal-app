@@ -27,6 +27,18 @@ final class ComposerPersonSegmenterTests: XCTestCase {
         }
     }
 
+    func testNativeFinalMaskQuantizesHalfCoverageToR8() throws {
+        let input: [Float16] = [0.12548828125, 0.50048828125, 0.9990234375, 1]
+        let data = input.withUnsafeBytes { Data($0) }
+        let bounds = CGRect(x: 0, y: 0, width: 4, height: 1)
+        let mask = CIImage(bitmapData: data, bytesPerRow: 8, size: bounds.size, format: .Rh, colorSpace: nil)
+        let result = values(try ComposerPersonSegmenter.refinedMask(mask, to: bounds))
+        for (actual, half) in zip(result, input) {
+            XCTAssertEqual(actual, (Float(half) * 255).rounded() / 255, accuracy: 0.000001)
+        }
+        XCTAssertGreaterThan(abs(result[1] - Float(input[1])), 0.001)
+    }
+
     func testNativeWarmupAndResetProduceForegroundMask() throws {
         let segmenter = ComposerPersonSegmenter(gpuName: "Apple M4")
         let input = CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0, width: 16, height: 9))
@@ -74,7 +86,8 @@ final class ComposerPersonSegmenterTests: XCTestCase {
                 let ix = Int(floor(u)), iy = Int(floor(v)), fx = u - floor(u), fy = v - floor(v)
                 let a = sample(ix, iy) * (1 - fx) + sample(ix + 1, iy) * fx
                 let b = sample(ix, iy + 1) * (1 - fx) + sample(ix + 1, iy + 1) * fx
-                expected.append(Float(Float16(a * (1 - fy) + b * fy)))
+                let half = Float(Float16(a * (1 - fy) + b * fy))
+                expected.append((half * 255).rounded() / 255)
             }
         }
         let segmenter = ComposerPersonSegmenter()

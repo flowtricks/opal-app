@@ -28,7 +28,8 @@ enum ColorCube {
         let t = min(1,max(0,(hue-lower)/(upper-lower)))
         let blend = t*t*(3-2*t)
         func interpolate(_ a: Double,_ b: Double) -> Double { a+(b-a)*blend }
-        let offset = interpolate(safeBands[left].hueOffset,safeBands[right].hueOffset)
+        let offset = interpolate(SelectiveColor.shaderHue(storedValue: safeBands[left].hueOffset, band: left),
+                                 SelectiveColor.shaderHue(storedValue: safeBands[right].hueOffset, band: right)) * 360
         let saturation = interpolate(safeBands[left].saturation,safeBands[right].saturation)
         let brightness = interpolate(safeBands[left].brightness,safeBands[right].brightness)
         hue = (hue+offset+360).truncatingRemainder(dividingBy:360)

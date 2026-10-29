@@ -2,7 +2,7 @@ import CoreImage
 import Metal
 
 /// Original MetalPetal red-channel mask blend. Unlike CIBlendWithMask, this
-/// consumes an Rh texture's red channel directly. Values here are display RGB;
+/// consumes an R8 texture's red channel directly. Values here are display RGB;
 /// SkinEffects renders this graph in Composer's DeviceRGB context.
 enum ComposerNativeMaskBlend {
     static func applyDisplayRGB(_ foreground: CIImage, mask: CIImage, background: CIImage) throws -> CIImage {
@@ -13,7 +13,7 @@ enum ComposerNativeMaskBlend {
 private final class ComposerNativeMaskBlendProcessor: CIImageProcessorKernel {
     override class var synchronizeInputs: Bool { false }
     override class var outputFormat: CIFormat { .BGRA8 }
-    override class func formatForInput(at inputIndex: Int32) -> CIFormat { inputIndex == 1 ? .Rh : .BGRA8 }
+    override class func formatForInput(at inputIndex: Int32) -> CIFormat { inputIndex == 1 ? .R8 : .BGRA8 }
     override class func roi(forInput inputIndex: Int32, arguments: [String: Any]?, outputRect: CGRect) -> CGRect {
         (arguments?["extent"] as? CIVector)?.cgRectValue ?? outputRect
     }

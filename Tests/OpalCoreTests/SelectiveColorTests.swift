@@ -3,6 +3,33 @@ import CoreImage
 @testable import OpalCore
 
 final class SelectiveColorTests: XCTestCase {
+    func testRecoveredSignedHueRangesAcrossAllEightBands() {
+        let negativeDegrees: [Double] = [60,30,30,60,60,60,30,30]
+        let positiveDegrees: [Double] = [30,30,60,60,60,30,30,60]
+        for band in 0..<8 {
+            for value in [-1.0, -0.25, 0, 0.25, 1] {
+                let expected = value * (value < 0 ? negativeDegrees[band] : positiveDegrees[band]) / 360
+                XCTAssertEqual(SelectiveColor.shaderHue(storedValue: value*360, band: band), expected, accuracy: 1e-15)
+            }
+            XCTAssertEqual(SelectiveColor.shaderHue(storedValue: 361, band: band), 0)
+            XCTAssertEqual(SelectiveColor.shaderHue(storedValue: .nan, band: band), 0)
+        }
+        XCTAssertEqual(SelectiveColor.shaderHue(storedValue: -20.16, band: 1), -0.056/12, accuracy: 1e-15)
+    }
+
+    func testImportedOrangeHueUsesNativeRangeAndPreservesSavedControl() throws {
+        let data = Data(#"{"version":1,"settings":{"colorState":{"hue":{"colorHues":[0,-0.056,0,0,0,0,0,0]}}}}"#.utf8)
+        let imported = try ComposerPresetCodec.decode(settingsData: data, fallbackName: "Orange")
+        XCTAssertEqual(SelectiveColor.shaderHue(storedValue: imported.settings.colorBands[1].hueOffset, band: 1) * 360,
+                       -1.68, accuracy: 1e-12)
+        let exported = try ComposerPresetCodec.encode(settings: imported.settings, name: "Orange")
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: exported.settingsData) as? [String: Any])
+        let settings = try XCTUnwrap(document["settings"] as? [String: Any])
+        let colors = try XCTUnwrap(settings["colorState"] as? [String: Any])
+        let hue = try XCTUnwrap(colors["hue"] as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(hue["colorHues"] as? [Double])[1], -0.056, accuracy: 1e-15)
+    }
+
     func testAnchorBandsDoNotDiluteEachOtherAndUseRecoveredPurpleMagentaAngles() {
         let colors: [(Double,Double,Double)] = [(1,0,0),(1,0.5,0),(1,1,0),(0,1,0),(0,1,1),(0,0,1),(0.5,0,1),(1,0,1)]
         for (index,color) in colors.enumerated() {

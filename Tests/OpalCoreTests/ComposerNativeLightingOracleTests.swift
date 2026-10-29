@@ -72,13 +72,29 @@ final class ComposerNativeLightingOracleTests: XCTestCase {
         blurCommand.commit(); blurCommand.waitUntilCompleted()
         XCTAssertNil(blurCommand.error)
         var cases: [(String, MTLTexture, CIImage)] = []
-        for settings in [0, 1] {
-            let bands = (0..<8).map { i in
-                ColorBandAdjustment(hueOffset: settings == 0 ? 0 : Double(i-4)*9,
-                                    saturation: settings == 0 ? 1 : 0.7+Double(i)*0.1,
-                                    brightness: settings == 0 ? 1 : 1-Double(i)*0.05)
+        for settings in [0, 1, 2, 3, 4] {
+            let bands: [ColorBandAdjustment] = (0..<8).map { i in
+                let hue: Double
+                switch settings {
+                case 0: hue = 0
+                case 2: hue = -360
+                case 3: hue = 360
+                case 4: hue = i == 1 ? -20.16 : 0
+                default: hue = Double(i-4)*9
+                }
+                let saturation: Double = settings == 0 ? 1 : 0.7+Double(i)*0.1
+                let brightness: Double = settings == 0 ? 1 : 1-Double(i)*0.05
+                return ColorBandAdjustment(hueOffset: hue, saturation: saturation, brightness: brightness)
             }
-            let buffers = bands.map { buffer(SIMD3<Float>(Float($0.hueOffset/360),Float($0.saturation),Float($0.brightness))) }
+            // Independent recovered main-app table, expressed as degrees. Do not
+            // call production shaderHue: this tests UI/preset→shader mapping too.
+            let negativeDegrees: [Double] = [60,30,30,60,60,60,30,30]
+            let positiveDegrees: [Double] = [30,30,60,60,60,30,30,60]
+            let buffers = bands.enumerated().map { i, band in
+                let degrees: Double = band.hueOffset < 0 ? negativeDegrees[i] : positiveDegrees[i]
+                let nativeHue: Double = (band.hueOffset / 360) * (degrees / 360)
+                return buffer(SIMD3<Float>(Float(nativeHue),Float(band.saturation),Float(band.brightness)))
+            }
             let native = try render("metalpetal::hsv::hsvWheelAdjustment", [color], buffers, .rgba8Unorm)
             cases.append(("HSV \(settings)", native, try XCTUnwrap(SelectiveColor.apply(to: sourceCI, bands: bands))))
         }

@@ -31,7 +31,7 @@ private final class ComposerTouchUpProcessor: CIImageProcessorKernel {
     }
     override class var synchronizeInputs: Bool { false }
     override class var outputFormat: CIFormat { .BGRA8 }
-    override class func formatForInput(at inputIndex: Int32) -> CIFormat { inputIndex == 0 ? .BGRA8 : .Rh }
+    override class func formatForInput(at inputIndex: Int32) -> CIFormat { inputIndex == 0 ? .BGRA8 : .R8 }
     override class func roi(forInput inputIndex: Int32, arguments: [String: Any]?, outputRect: CGRect) -> CGRect {
         (arguments?["extent"] as? CIVector)?.cgRectValue ?? outputRect
     }

@@ -5,7 +5,7 @@ import XCTest
 @testable import OpalCore
 
 final class ComposerToneSyncNativeOracleTests: XCTestCase {
-func testFullToneSyncMatchesNativeExtractionCalibrationFaceBalanceAndRhBlend() throws {
+func testFullToneSyncMatchesNativeExtractionCalibrationFaceBalanceAndR8Blend() throws {
 
 let device = MTLCreateSystemDefaultDevice()!
 let queue = device.makeCommandQueue()!
@@ -60,16 +60,16 @@ func pixels(_ image:CIImage)->[UInt8] { pixels(image,nativeContext) }
 func report(_ name:String,_ reference:[UInt8],_ actual:[UInt8]) {
  let errors=zip(reference,actual).map{abs(Int($0)-Int($1))}; XCTAssertEqual(errors.filter{$0>0}.count,0,name); print("\(name): changed=\(errors.filter{$0>0}.count)/\(errors.count) max=\(errors.max()!) mean=\(Double(errors.reduce(0,+))/Double(errors.count))")
 }
-var input=[UInt8](repeating:255,count:w*h*4), maskValues=[Float16](repeating:0,count:w*h)
+var input=[UInt8](repeating:255,count:w*h*4), maskValues=[UInt8](repeating:0,count:w*h)
 for y in 0..<h {for x in 0..<w {
  let i=(y*w+x)*4
  input[i]=UInt8(100+(x*3+y*7)%140);input[i+1]=UInt8(70+(x*7+y*11)%110);input[i+2]=UInt8(40+(x*13+y*5)%70)
- maskValues[y*w+x]=Float16(x)/Float16(w-1)
+ maskValues[y*w+x]=UInt8((Float(x)/Float(w-1)*255).rounded())
 }}
-let source=texture(), mask=texture(.r16Float)
+let source=texture(), mask=texture(.r8Unorm)
 source.replace(region:region,mipmapLevel:0,withBytes:input,bytesPerRow:w*4)
-mask.replace(region:region,mipmapLevel:0,withBytes:maskValues,bytesPerRow:w*2)
-let sourceCI=ci(input),maskCI=CIImage(bitmapData:maskValues.withUnsafeBytes{Data($0)},bytesPerRow:w*2,size:bounds.size,format:.Rh,colorSpace:nil)
+mask.replace(region:region,mipmapLevel:0,withBytes:maskValues,bytesPerRow:w)
+let sourceCI=ci(input),maskCI=CIImage(bitmapData:maskValues.withUnsafeBytes{Data($0)},bytesPerRow:w,size:bounds.size,format:.R8,colorSpace:nil)
 let nativeSkin=try render("metalpetal::skintoneadjustment::extractSkin",inputs:[source,mask],buffers:[])
 let ciSkin=SkinEffects.extractSkin!.apply(extent:bounds,arguments:[sourceCI,maskCI])!
 report("Skin extraction",bytes(nativeSkin),pixels(ciSkin))

@@ -53,15 +53,15 @@ final class ComposerNativeTouchUpOracleTests: XCTestCase {
             XCTAssertNil(command.error)
             return result
         }
-        var input = [UInt8](repeating: 255, count: w*h*4), masks = [Float16](repeating: 0, count: w*h)
+        var input = [UInt8](repeating: 255, count: w*h*4), masks = [UInt8](repeating: 0, count: w*h)
         for y in 0..<h { for x in 0..<w {
             let i = (y*w+x)*4
             input[i] = UInt8((x*11+y*3)%256); input[i+1] = UInt8((x*2+y*7)%256); input[i+2] = UInt8((x*5+y*13)%256)
-            masks[y*w+x] = x<40 ? 1 : (x<70 ? Float16(70-x)/30 : 0)
+            masks[y*w+x] = x<40 ? 255 : (x<70 ? UInt8((Float(70-x)/30*255).rounded()) : 0)
         } }
-        let color = try texture(.rgba8Unorm), mask = try texture(.r16Float)
+        let color = try texture(.rgba8Unorm), mask = try texture(.r8Unorm)
         color.replace(region: region, mipmapLevel: 0, withBytes: input, bytesPerRow: w*4)
-        mask.replace(region: region, mipmapLevel: 0, withBytes: masks, bytesPerRow: w*2)
+        mask.replace(region: region, mipmapLevel: 0, withBytes: masks, bytesPerRow: w)
         let lutDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 256, height: 1, mipmapped: false)
         lutDescriptor.usage = .shaderRead; lutDescriptor.storageMode = .shared
         let lut = try XCTUnwrap(device.makeTexture(descriptor: lutDescriptor))
@@ -90,7 +90,7 @@ final class ComposerNativeTouchUpOracleTests: XCTestCase {
         XCTAssertNil(blurCommand.error)
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
         let sourceCI = CIImage(bitmapData: Data(input), bytesPerRow: w*4, size: bounds.size, format: .RGBA8, colorSpace: colorSpace)
-        let maskCI = CIImage(bitmapData: masks.withUnsafeBytes { Data($0) }, bytesPerRow: w*2, size: bounds.size, format: .Rh, colorSpace: nil)
+        let maskCI = CIImage(bitmapData: masks.withUnsafeBytes { Data($0) }, bytesPerRow: w, size: bounds.size, format: .R8, colorSpace: nil)
         let context = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
         for amount in [0.25, 0.75, 1.0] {
             let native = try render("metalpetal::touchup::highPassSkinSmoothingMaskProcessAndComposite",

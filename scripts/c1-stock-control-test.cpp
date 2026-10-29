@@ -16,6 +16,14 @@ int main(int argc, char **argv) {
         StockC1WhiteBalanceState before{}, state{};
         if(!stock_c1_read_white_balance(control.get(), &before, error, sizeof error)) throw std::runtime_error(error);
         std::cout << "white_balance=" << before.temperature << " min=" << before.minimum << " max=" << before.maximum << " auto=" << before.automatic << " temperature_info=" << before.temperature_info << " auto_info=" << before.automatic_info << '\n';
+        StockC1ExposureState exposure{};
+        if(stock_c1_read_exposure(control.get(), &exposure, error, sizeof error))
+            std::cout << "exposure_register=" << exposure.value << " composer_value=" << exposure.composer_value << '\n';
+        else std::cerr << "Exposure read: " << error << '\n';
+        StockC1SaturationState saturation{};
+        if(stock_c1_read_saturation(control.get(), &saturation, error, sizeof error))
+            std::cout << "saturation_register=" << saturation.value << " composer_value=" << saturation.composer_value << '\n';
+        else std::cerr << "Saturation read: " << error << '\n';
         if(argc == 3) return 0;
         const int target = std::stoi(argv[4]);
         bool okay = stock_c1_set_white_balance(control.get(), target, &state, error, sizeof error);

@@ -261,6 +261,16 @@ extension ComposerPresetCodecTests {
 }
 
 extension ComposerPresetCodecTests {
+    func testNativeHueEndpointsSurviveImportSanitizationAndExport() throws {
+        let data = Data(#"{"version":1,"settings":{"colorState":{"enabled":true,"hue":{"colorHues":[-1,1,-0.5,0.5,-1,1,-0.5,0.5]}}}}"#.utf8)
+        let imported = try ComposerPresetCodec.decode(settingsData: data, fallbackName: "Hue bounds")
+        let expected = [-360.0,360,-180,180,-360,360,-180,180]
+        XCTAssertEqual(imported.settings.sanitized.colorBands.map(\.hueOffset), expected)
+        let exported = try ComposerPresetCodec.encode(settings: imported.settings.sanitized, name: "Hue bounds", archive: imported.archive)
+        let restored = try ComposerPresetCodec.decode(settingsData: exported.settingsData, fallbackName: "Hue bounds")
+        XCTAssertEqual(restored.settings.colorBands.map(\.hueOffset), expected)
+    }
+
     func testNativeFilterStringIdentitiesAndIntensityRoundTrip() throws {
         let identities:[PhotoFilter:String] = [.chrome:"C1",.fade:"F1",.instant:"I2",.mono:"M1",.noir:"N2",.process:"P1",.tonal:"T1",.transfer:"T2",.g1:"G1",.d1:"D1",.q1:"Q1",.x1:"X1",.s1:"S1"]
         for (filter,identity) in identities {

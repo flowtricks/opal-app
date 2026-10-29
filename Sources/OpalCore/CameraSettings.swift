@@ -13,6 +13,14 @@ public struct CameraSettings: Codable, Equatable, Sendable {
     public var blurRadius = 18.0
     /// Weight of the preceding person mask. Lower values track movement faster.
     public var maskSmoothing = 0.35
+    /// Composer values target camera firmware, not pixel exposure/temperature.
+    /// Nil means this settings document has no physical Composer adjustment.
+    public var composerExposure: ComposerPhysicalAdjustment?
+    public var composerWhiteBalance: ComposerPhysicalAdjustment?
+    public var composerSaturation: ComposerPhysicalAdjustment?
+    public var composerBokehRadius: Double?
+    public var composerContrast: ComposerContrastAdjustment?
+    /// Independent software exposure in photographic stops.
     public var exposure = 0.0
     public var contrast = 1.0
     public var saturation = 1.0
@@ -54,6 +62,11 @@ public struct CameraSettings: Codable, Equatable, Sendable {
         case blurRadius
         case maskSmoothing
         case exposure
+        case composerExposure
+        case composerWhiteBalance
+        case composerSaturation
+        case composerBokehRadius
+        case composerContrast
         case contrast
         case saturation
         case highlights
@@ -95,6 +108,11 @@ public struct CameraSettings: Codable, Equatable, Sendable {
         blurEnabled = try container.decodeIfPresent(Bool.self, forKey: .blurEnabled) ?? blurEnabled
         blurRadius = try container.decodeIfPresent(Double.self, forKey: .blurRadius) ?? blurRadius
         maskSmoothing = try container.decodeIfPresent(Double.self, forKey: .maskSmoothing) ?? maskSmoothing
+        composerExposure = try container.decodeIfPresent(ComposerPhysicalAdjustment.self, forKey: .composerExposure)
+        composerWhiteBalance = try container.decodeIfPresent(ComposerPhysicalAdjustment.self, forKey: .composerWhiteBalance)
+        composerSaturation = try container.decodeIfPresent(ComposerPhysicalAdjustment.self, forKey: .composerSaturation)
+        composerBokehRadius = try container.decodeIfPresent(Double.self, forKey: .composerBokehRadius)
+        composerContrast = try container.decodeIfPresent(ComposerContrastAdjustment.self, forKey: .composerContrast)
         exposure = try container.decodeIfPresent(Double.self, forKey: .exposure) ?? exposure
         contrast = try container.decodeIfPresent(Double.self, forKey: .contrast) ?? contrast
         saturation = try container.decodeIfPresent(Double.self, forKey: .saturation) ?? saturation
@@ -135,6 +153,11 @@ public struct CameraSettings: Codable, Equatable, Sendable {
         value.manualLightingFields=manualLightingFields.intersection(Self.lightingFieldKeys)
         value.blurRadius = clamp(blurRadius, 0...60, 18)
         value.maskSmoothing = clamp(maskSmoothing, 0...0.85, 0.35)
+        value.composerExposure = composerExposure?.validated
+        value.composerWhiteBalance = composerWhiteBalance?.validated
+        value.composerSaturation = composerSaturation?.validated
+        value.composerBokehRadius = composerBokehRadius.map { clamp($0, 0...11, 0) }
+        if let contrast = composerContrast, !contrast.value.isFinite { value.composerContrast = nil }
         value.exposure = clamp(exposure, -3...3, 0)
         value.contrast = clamp(contrast, 0.5...2, 1)
         value.saturation = clamp(saturation, 0...2, 1)
@@ -160,6 +183,29 @@ public struct CameraSettings: Codable, Equatable, Sendable {
             value.colorBands.append(contentsOf: Array(repeating: ColorBandAdjustment(), count: 8 - value.colorBands.count))
         }
         return value
+    }
+}
+
+/// A preserved camera-control request. Availability and hardware readback are
+/// runtime state; the renderer must not synthesize a substitute pixel effect.
+public struct ComposerPhysicalAdjustment: Codable, Equatable, Sendable {
+    public var value: Double
+    public var automatic: Bool
+    public var enabled: Bool
+    public init(value: Double, automatic: Bool = false, enabled: Bool = true) {
+        self.value = value; self.automatic = automatic; self.enabled = enabled
+    }
+    public var requestsManualValue: Bool { enabled && !automatic }
+    fileprivate var validated: Self? { value.isFinite ? self : nil }
+}
+
+/// Composer's software CLAHE state; zero is an active clip limit, not bypass.
+public struct ComposerContrastAdjustment: Codable, Equatable, Sendable {
+    public var value: Double
+    public var automatic: Bool
+    public var enabled: Bool
+    public init(value: Double, automatic: Bool = false, enabled: Bool = true) {
+        self.value = value; self.automatic = automatic; self.enabled = enabled
     }
 }
 

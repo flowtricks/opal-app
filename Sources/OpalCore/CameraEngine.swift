@@ -9,9 +9,14 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
     @Published public var settings = CameraSettings() {
         didSet {
             if settings != settings.sanitized { settings = settings.sanitized }
-            stateLock.lock(); pipelineSettings = settings.sanitized; stateLock.unlock()
+            stateLock.lock()
+            pipelineSettings = settings.sanitized
+            let ticket = hardwareControlGate.readyTicket
+            stateLock.unlock()
             let value = settings.sanitized
-            sessionQueue.async { [weak self] in self?.applyHardwareControls(value) }
+            if let ticket {
+                sessionQueue.async { [weak self] in self?.applyHardwareControls(value, ticket: ticket) }
+            }
         }
     }
     @Published public private(set) var preview: CGImage?
@@ -25,7 +30,11 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         get { stateLock.lock(); defer { stateLock.unlock() }; return frameCallback }
         set { stateLock.lock(); frameCallback = newValue; stateLock.unlock() }
     }
-    private let session = AVCaptureSession()
+    // Owned only by sessionQueue. Every setup gets a fresh AVFoundation session;
+    // disconnected sessions are cleared before their blocking teardown begins.
+    private var session: AVCaptureSession?
+    private var sessionIdentity = CaptureSessionIdentity() // stateLock.
+    private var captureClock: CMClock? // stateLock; snapshot used by frame callbacks.
     private let sessionQueue = DispatchQueue(label: "app.opal.capture", qos: .userInitiated)
     private let processingQueue = DispatchQueue(label: "app.opal.effects", qos: .userInitiated)
     private let previewQueue = DispatchQueue(label: "app.opal.preview-analysis", qos: .utility)
@@ -38,6 +47,8 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
     private var processor = EffectsProcessor()
     private var timer: DispatchSourceTimer?
     private var captureDevice: AVCaptureDevice?
+    private var captureDeviceTicket: CaptureConfigurationGate.Ticket? // Session queue only.
+    private var hardwareControlGate = CaptureHardwareControlGate() // stateLock.
     // Session queue only. The C1's descriptor-driven USB control channel owns
     // focus so AVFoundation must not reset it on unrelated slider changes.
     private var externalFocusManagement = false
@@ -97,9 +108,12 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
                     self.sourceConnected = false
                     self.reconnectPending = false
                     self.configurationGate.invalidate()
+                    self.hardwareControlGate.invalidate()
+                    self.sessionIdentity.clear(); self.captureClock = nil
                     self.currentOutput = nil
                     self.recoveryInFlight = false
                     self.stateLock.unlock()
+                    self.sessionQueue.async { [weak self] in self?.releasePhysicalCapture() }
                     // Preserve requested intent and virtual output, but release
                     // physical control handles subscribed to source liveness.
                     self.isRunning = false
@@ -110,19 +124,25 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
                 }
             })
         }
-        observerTokens.append(NotificationCenter.default.addObserver(forName: .AVCaptureSessionRuntimeError, object: session, queue: .main) { [weak self] note in
+        observerTokens.append(NotificationCenter.default.addObserver(forName: .AVCaptureSessionRuntimeError, object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
-            self.stateLock.lock(); let active = self.wantsRunning && !self.externalCapture; self.stateLock.unlock()
+            self.stateLock.lock()
+            let active = self.wantsRunning && !self.externalCapture && self.sourceConnected &&
+                self.sessionIdentity.accepts(note.object as AnyObject?)
+            self.stateLock.unlock()
             guard active else { return }
             let error = note.userInfo?[AVCaptureSessionErrorKey] as? Error
             self.status = "Capture interrupted — last frame retained. \(error?.localizedDescription ?? "")"
         })
-        observerTokens.append(NotificationCenter.default.addObserver(forName: .AVCaptureSessionInterruptionEnded, object: session, queue: .main) { [weak self] _ in
+        observerTokens.append(NotificationCenter.default.addObserver(forName: .AVCaptureSessionInterruptionEnded, object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
             // AVFoundation resumes an interrupted session itself. Rebuilding it
             // here races its resume/device-connected notification and can stop
             // healthy capture. The watchdog handles an actual remaining stall.
-            self.stateLock.lock(); let active = self.wantsRunning && !self.externalCapture; self.stateLock.unlock()
+            self.stateLock.lock()
+            let active = self.wantsRunning && !self.externalCapture && self.sourceConnected &&
+                self.sessionIdentity.accepts(note.object as AnyObject?)
+            self.stateLock.unlock()
             if active { self.status = "Camera available — waiting for fresh frames…" }
         })
     }
@@ -131,7 +151,7 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         observerTokens.forEach(NotificationCenter.default.removeObserver)
         timer?.cancel()
         reconnectWork?.cancel()
-        session.stopRunning()
+        session?.stopRunning()
     }
 
     public func refreshDevices() {
@@ -143,7 +163,7 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         stateLock.lock(); let active = wantsRunning; stateLock.unlock()
         // A lost external camera must never silently switch to a different camera.
         if !active && selectedDeviceID.isEmpty {
-            selectedDeviceID = devices.first(where: { $0.name == "Opal C1" })?.id ?? devices.first?.id ?? ""
+            selectedDeviceID = devices.first(where: { $0.name == "Opal C1" })?.id ?? ""
         }
     }
 
@@ -157,7 +177,7 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         stateLock.lock()
         guard !wantsRunning else { stateLock.unlock(); return }
         wantsRunning = true; externalCapture = false; activeResolution = pipelineSettings.resolution; runID &+= 1
-        configurationGate.invalidate(); sourceConnected = true; reconnectPending = false
+        configurationGate.invalidate(); hardwareControlGate.invalidate(); sessionIdentity.clear(); captureClock = nil; sourceConnected = true; reconnectPending = false
         let generation = runID
         stateLock.unlock()
         status = "Requesting camera access…"
@@ -178,11 +198,11 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
 
     public func stop(completion: (() -> Void)? = nil) {
         reconnectWork?.cancel(); reconnectWork = nil
-        stateLock.lock(); wantsRunning = false; externalCapture = false; runID &+= 1; latch.clear(); currentOutput = nil; configurationGate.invalidate(); reconnectPending = false; stateLock.unlock()
+        stateLock.lock(); wantsRunning = false; externalCapture = false; runID &+= 1; latch.clear(); currentOutput = nil; configurationGate.invalidate(); hardwareControlGate.invalidate(); sessionIdentity.clear(); captureClock = nil; reconnectPending = false; stateLock.unlock()
         isRunning = false; preview = nil; status = "Camera stopped"
         outputQueue.async { [weak self] in self?.timer?.cancel(); self?.timer = nil; self?.pendingEmission?.cancel(); self?.pendingEmission = nil }
         sessionQueue.async { [weak self] in
-            self?.session.stopRunning()
+            self?.releasePhysicalCapture()
             if let completion { DispatchQueue.main.async(execute: completion) }
         }
         processingQueue.async { [weak self] in self?.processor.reset() }
@@ -194,11 +214,12 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         stateLock.lock()
         runID &+= 1; let generation = runID
         wantsRunning = true; externalCapture = true; currentOutput = nil
+        configurationGate.invalidate(); hardwareControlGate.invalidate()
         activeResolution = pipelineSettings.resolution; let resolution = activeResolution
         stats = CameraDiagnostics(); latch.clear(); externalFramePending = false
         resetWatchdogLocked()
         stateLock.unlock()
-        sessionQueue.async { [weak self] in self?.session.stopRunning(); self?.captureDevice = nil }
+        sessionQueue.async { [weak self] in self?.releasePhysicalCapture() }
         processingQueue.async { [weak self] in self?.processor = EffectsProcessor(resolution: resolution) }
         isRunning = true; preview = nil; status = "\(name) — preparing frames…"
         startOutput(generation: generation)
@@ -266,7 +287,7 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
             self.beginCapture(id, generation: generation)
         }
         reconnectWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     private func isCurrentConfiguration(_ ticket: CaptureConfigurationGate.Ticket, generation: UInt64) -> Bool {
@@ -282,6 +303,8 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
             stateLock.unlock(); return
         }
         currentOutput = nil
+        sessionIdentity.clear(); captureClock = nil
+        hardwareControlGate.configure(ticket)
         lastRawNanoseconds = 0
         stateLock.unlock()
         status = recovering ? "Camera stalled — attempting recovery…" : "Starting camera…"
@@ -299,47 +322,57 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
             do {
                 self.stateLock.lock(); let resolution = self.activeResolution; self.stateLock.unlock()
                 guard let device = AVCaptureDevice(uniqueID: id) else { throw CaptureError.noDevice }
-                if self.session.isRunning { self.session.stopRunning() }
-                self.session.beginConfiguration()
-                self.session.inputs.forEach(self.session.removeInput)
-                self.session.outputs.forEach(self.session.removeOutput)
+                self.releasePhysicalCapture()
+                guard self.isCurrentConfiguration(ticket, generation: generation) else { return }
+                // Composer's UVC helper selects the first exact-sized format
+                // before constructing its new session (0x10001915c/0x100019284).
+                // Enumeration order is significant: do not rank equal-sized
+                // formats by subtype, field of view, or frame-rate capability.
+                let formats = device.formats
+                let dimensions = formats.map { CMVideoFormatDescriptionGetDimensions($0.formatDescription) }
+                guard let formatIndex = CaptureFormatSelection.firstIndex(dimensions: dimensions,
+                    width: resolution.width, height: resolution.height) else {
+                    throw CaptureError.unsupportedResolution(resolution)
+                }
+                let selectedDimensions = dimensions[formatIndex]
+                guard selectedDimensions.width >= resolution.width,
+                      selectedDimensions.height >= resolution.height else {
+                    throw CaptureError.unsupportedResolution(resolution)
+                }
+                try device.lockForConfiguration()
+                guard self.isCurrentConfiguration(ticket, generation: generation) else {
+                    device.unlockForConfiguration()
+                    return
+                }
+                device.activeFormat = formats[formatIndex]
+                // The original does not force activeVideoMin/MaxFrameDuration.
+                device.unlockForConfiguration()
+                let session = AVCaptureSession()
+                self.session = session
+                self.stateLock.lock(); self.sessionIdentity.bind(session); self.stateLock.unlock()
+                session.beginConfiguration()
                 do {
                     let input = try AVCaptureDeviceInput(device: device)
-                    guard self.session.canAddInput(input) else { throw CaptureError.noInput }
-                    self.session.addInput(input)
+                    guard session.canAddInput(input) else { throw CaptureError.noInput }
+                    session.addInput(input)
                     let preset: AVCaptureSession.Preset
-                    switch resolution {
-                    case .sd360, .hd720: preset = .hd1280x720
-                    case .hd1080: preset = .hd1920x1080
-                    case .qhd1440: preset = .high
-                    case .uhd2160: preset = .hd4K3840x2160
+                    switch (selectedDimensions.width, selectedDimensions.height) {
+                    case (1280, 720): preset = .hd1280x720
+                    case (1920, 1080): preset = .hd1920x1080
+                    case (3840, 2160): preset = .hd4K3840x2160
+                    default: preset = .high
                     }
-                    if self.session.canSetSessionPreset(preset) { self.session.sessionPreset = preset }
-                    try device.lockForConfiguration()
-                    let candidates = device.formats.filter { format in
-                        let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-                        return dims.width >= resolution.width && dims.height >= resolution.height && format.videoSupportedFrameRateRanges.contains { CaptureRatePolicy.accepts(minimum: $0.minFrameRate, maximum: $0.maxFrameRate) }
-                    }.sorted {
-                        let a = CMVideoFormatDescriptionGetDimensions($0.formatDescription)
-                        let b = CMVideoFormatDescriptionGetDimensions($1.formatDescription)
-                        return Int(a.width) * Int(a.height) < Int(b.width) * Int(b.height)
-                    }
-                    guard let format = candidates.first else {
-                        device.unlockForConfiguration()
+                    guard session.canSetSessionPreset(preset), device.supportsSessionPreset(preset) else {
                         throw CaptureError.unsupportedResolution(resolution)
                     }
-                    device.activeFormat = format
-                    if let rate = device.activeFormat.videoSupportedFrameRateRanges.first(where: { CaptureRatePolicy.accepts(minimum: $0.minFrameRate, maximum: $0.maxFrameRate) }) {
-                        let duration = CaptureRatePolicy.duration(minimum: rate.minFrameDuration, maximum: rate.maxFrameDuration)
-                        device.activeVideoMinFrameDuration = duration
-                        device.activeVideoMaxFrameDuration = duration
-                    }
-                    device.unlockForConfiguration()
+                    // This preset follows the explicit device-format selection,
+                    // matching the original UVC setup sequence.
+                    session.sessionPreset = preset
                     let output = AVCaptureVideoDataOutput()
                     output.alwaysDiscardsLateVideoFrames = true
                     output.setSampleBufferDelegate(self, queue: self.processingQueue)
-                    guard self.session.canAddOutput(output) else { throw CaptureError.noOutput }
-                    self.session.addOutput(output)
+                    guard session.canAddOutput(output) else { throw CaptureError.noOutput }
+                    session.addOutput(output)
                     // Preserve native bi-planar camera buffers and avoid an AVFoundation
                     // CPU/GPU conversion to four-byte BGRA before the effects render.
                     let available = output.availableVideoPixelFormatTypes
@@ -353,41 +386,44 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
                     guard self.wantsRunning, self.runID == generation, self.sourceConnected,
                           self.configurationGate.isValid(ticket) else {
                         self.stateLock.unlock()
-                        self.session.commitConfiguration()
+                        session.commitConfiguration()
                         return
                     }
                     self.currentOutput = output
                     self.stateLock.unlock()
-                } catch { self.session.commitConfiguration(); throw error }
-                self.session.commitConfiguration()
+                } catch { session.commitConfiguration(); throw error }
+                session.commitConfiguration()
                 self.captureDevice = device
+                self.captureDeviceTicket = ticket
                 self.stateLock.lock()
+                self.captureClock = session.synchronizationClock
                 if !recovering { self.stats = CameraDiagnostics(); self.resetWatchdogLocked() }
-                let settings = self.pipelineSettings; self.stateLock.unlock()
-                self.applyHardwareControls(settings)
+                self.stateLock.unlock()
                 self.processingQueue.async { [weak self] in self?.processor = EffectsProcessor(resolution: resolution) }
                 guard self.isCurrentConfiguration(ticket, generation: generation) else { return }
-                self.session.startRunning()
-                guard self.session.isRunning else { throw CaptureError.noInput }
+                session.startRunning()
+                guard session.isRunning else { throw CaptureError.noInput }
                 let negotiated = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
                 guard negotiated.width >= resolution.width && negotiated.height >= resolution.height else {
-                    self.session.stopRunning()
+                    session.stopRunning()
                     throw CaptureError.unsupportedResolution(resolution)
                 }
                 self.stateLock.lock()
                 // startRunning may block during USB recovery. Give the newly
                 // negotiated source its full first-frame grace period, rather
                 // than immediately treating that blocked time as another stall.
+                self.captureClock = session.synchronizationClock
                 self.runStartedNanoseconds = DispatchTime.now().uptimeNanoseconds
                 self.stats.events.append("Sensor format \(negotiated.width) × \(negotiated.height); requested output \(resolution.width) × \(resolution.height).")
                 self.stateLock.unlock()
-                guard self.isCurrentConfiguration(ticket, generation: generation) else { self.session.stopRunning(); return }
+                guard self.isCurrentConfiguration(ticket, generation: generation) else { session.stopRunning(); return }
                 self.startOutput(generation: generation)
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrentConfiguration(ticket, generation: generation) else { return }
                     self.isRunning = true; self.status = "Live · \(resolution.width) × \(resolution.height) · 30 fps"
                 }
             } catch {
+                self.releasePhysicalCapture()
                 guard self.isCurrentConfiguration(ticket, generation: generation) else { return }
                 let detail = "\(error.localizedDescription) Waiting for the camera to become available. Close any other app using the C1; capture will resume automatically."
                 if recovering {
@@ -406,14 +442,38 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
         }
     }
 
-    private func applyHardwareControls(_ settings: CameraSettings) {
-        stateLock.lock()
-        let available = sourceConnected && wantsRunning && !externalCapture
-        stateLock.unlock()
-        guard available, let device = captureDevice else { return }
+    // Session queue only. Tear down AVFoundation's references to a removed USB
+    // device without stopping the separately scheduled virtual-camera output.
+    private func releasePhysicalCapture() {
+        captureDevice = nil
+        captureDeviceTicket = nil
+        let previous = session
+        session = nil
+        stateLock.lock(); sessionIdentity.clear(); captureClock = nil; currentOutput = nil; stateLock.unlock()
+        guard let session = previous else { return }
+        session.stopRunning()
+        session.beginConfiguration()
+        for output in session.outputs {
+            (output as? AVCaptureVideoDataOutput)?.setSampleBufferDelegate(nil, queue: nil)
+            session.removeOutput(output)
+        }
+        session.inputs.forEach(session.removeInput)
+        session.commitConfiguration()
+    }
+
+    private func mayApplyHardwareControls(_ ticket: CaptureConfigurationGate.Ticket) -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return sourceConnected && wantsRunning && !externalCapture &&
+            configurationGate.isValid(ticket) && hardwareControlGate.readyTicket == ticket
+    }
+
+    private func applyHardwareControls(_ settings: CameraSettings, ticket: CaptureConfigurationGate.Ticket) {
+        guard mayApplyHardwareControls(ticket), captureDeviceTicket == ticket,
+              let device = captureDevice, device.isConnected else { return }
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
+            guard mayApplyHardwareControls(ticket), device.isConnected else { return }
             let exposure = device.isExposureModeSupported(.locked)
             let whiteBalance = device.isWhiteBalanceModeSupported(.locked)
             let focus = device.isFocusModeSupported(.locked)
@@ -437,10 +497,32 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
     }
 
     public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        stateLock.lock(); let active = wantsRunning && !externalCapture && currentOutput === output; let generation = runID; let settings = pipelineSettings; if active { stats.capturedFrames &+= 1; lastRawNanoseconds = DispatchTime.now().uptimeNanoseconds }; stateLock.unlock()
-        guard active, let input = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard CMSampleBufferDataIsReady(sampleBuffer),
+              let input = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        stateLock.lock()
+        let active = wantsRunning && !externalCapture && sourceConnected && currentOutput === output
+        let generation = runID; let settings = pipelineSettings
+        let clock = captureClock
+        var firstFrameTicket: CaptureConfigurationGate.Ticket?
+        if active {
+            stats.capturedFrames &+= 1
+            lastRawNanoseconds = DispatchTime.now().uptimeNanoseconds
+            if CVPixelBufferGetWidth(input) >= activeResolution.width,
+               CVPixelBufferGetHeight(input) >= activeResolution.height {
+                firstFrameTicket = hardwareControlGate.receiveFirstFrame()
+            }
+        }
+        stateLock.unlock()
+        guard active else { return }
+        if let ticket = firstFrameTicket {
+            sessionQueue.async { [weak self] in
+                guard let self, self.mayApplyHardwareControls(ticket) else { return }
+                self.stateLock.lock(); let latest = self.pipelineSettings; self.stateLock.unlock()
+                self.applyHardwareControls(latest, ticket: ticket)
+            }
+        }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        let hostTime = session.synchronizationClock.map { CMSyncConvertTime(pts, from: $0, to: CMClockGetHostTimeClock()) } ?? pts
+        let hostTime = clock.map { CMSyncConvertTime(pts, from: $0, to: CMClockGetHostTimeClock()) } ?? pts
         let seconds = CMTimeGetSeconds(hostTime)
         let capturedAt = seconds.isFinite && seconds >= 0 && seconds < Double(UInt64.max)/1_000_000_000 ? UInt64(seconds*1_000_000_000) : nil
         processFrame(input, settings: settings, generation: generation, capturedAt: capturedAt)
@@ -639,5 +721,44 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
             case .unsupportedResolution(let resolution): return "This camera does not expose \(resolution.title) at 30 fps. Select a lower supported resolution."
             }
         }
+    }
+}
+
+/// Enables configuration-bound controls only once that source delivers a valid
+/// frame. Access is protected by CameraEngine's state lock.
+struct CaptureHardwareControlGate {
+    private var ticket: CaptureConfigurationGate.Ticket?
+    private(set) var readyTicket: CaptureConfigurationGate.Ticket?
+    mutating func configure(_ ticket: CaptureConfigurationGate.Ticket) {
+        self.ticket = ticket
+        readyTicket = nil
+    }
+    mutating func receiveFirstFrame() -> CaptureConfigurationGate.Ticket? {
+        guard let ticket, readyTicket == nil else { return nil }
+        readyTicket = ticket
+        return ticket
+    }
+    mutating func invalidate() { ticket = nil; readyTicket = nil }
+}
+
+/// Rejects delayed notifications from a detached or replaced capture session.
+/// A notification retains its source object, so an old identifier cannot be
+/// reused by a replacement while that notification is still being delivered.
+struct CaptureSessionIdentity {
+    private var identity: ObjectIdentifier?
+    mutating func bind(_ session: AnyObject) { identity = ObjectIdentifier(session) }
+    mutating func clear() { identity = nil }
+    func accepts(_ source: AnyObject?) -> Bool {
+        guard let identity, let source else { return false }
+        return identity == ObjectIdentifier(source)
+    }
+}
+
+/// Composer enumerates formats in device order and falls back to 1080p only
+/// when the requested dimensions are absent. Output still rejects upscaling.
+enum CaptureFormatSelection {
+    static func firstIndex(dimensions: [CMVideoDimensions], width: Int, height: Int) -> Int? {
+        dimensions.firstIndex { $0.width == width && $0.height == height }
+            ?? dimensions.firstIndex { $0.width == 1920 && $0.height == 1080 }
     }
 }

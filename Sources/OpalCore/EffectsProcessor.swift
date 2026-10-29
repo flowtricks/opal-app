@@ -14,6 +14,8 @@ public final class EffectsProcessor {
     public static var toneSyncAvailable: Bool { SkinEffects.toneSyncAvailable }
     private let skinEffects = SkinEffects()
     private var skinFace: CGRect?
+    private let composerSegmenter = ComposerPersonSegmenter()
+    private let usesComposerAppleMask = ComposerPersonSegmenter.usesAppleVision(gpuName: MTLCreateSystemDefaultDevice()?.name ?? "")
     private let segmentation = VNGeneratePersonSegmentationRequest()
     private var previousMask: CIImage?
     private var faceTracking = FaceTrackingSmoother()
@@ -43,7 +45,7 @@ public final class EffectsProcessor {
         ] as CFDictionary, &pool)
     }
 
-    public func reset() { previousMask = nil; faceTracking.reset(); frameCount = 0; skinFace = nil; skinEffects.reset() }
+    public func reset() { composerSegmenter.reset(); previousMask = nil; faceTracking.reset(); frameCount = 0; skinFace = nil; skinEffects.reset() }
 
     public func process(_ buffer: CVPixelBuffer, settings original: CameraSettings) throws -> CVPixelBuffer {
         let settings = original.sanitized
@@ -76,10 +78,16 @@ public final class EffectsProcessor {
             backgroundImage = backgroundURL.flatMap { CIImage(contentsOf: $0) }
         }
         var personMask: CIImage?
-        let needsPersonMask = (settings.blurEnabled && settings.blurRadius > 0) || backgroundImage != nil || (settings.effectsEnabled && (settings.touchUp > 0 || settings.toneSync > 0))
+        let needsPersonMask = (settings.blurEnabled && (settings.composerBokehRadius ?? settings.blurRadius) > 0) || backgroundImage != nil || (settings.effectsEnabled && (settings.touchUp > 0 || settings.toneSync > 0))
         lastSegmentationMilliseconds = 0
         if needsPersonMask {
             let segmentationStarted = DispatchTime.now().uptimeNanoseconds
+            let fullMask: CIImage
+            if usesComposerAppleMask {
+                fullMask = try composerSegmenter.mask(for: image)
+            } else {
+                // Retain the existing portable path on non-Apple GPUs. Composer
+                // uses GoogleMeets there; this path is not claimed equivalent.
             // Segmentation sees the exact crop/mirror used by the compositor.
             let handler = VNImageRequestHandler(ciImage: image, orientation: .up, options: [:])
             try handler.perform([segmentation])
@@ -98,21 +106,31 @@ public final class EffectsProcessor {
                 throw ProcessingError.maskRenderFailed
             }
             previousMask = CIImage(cgImage: maskImage)
-            let fullMask = previousMask!.transformed(by: CGAffineTransform(
+            fullMask = previousMask!.transformed(by: CGAffineTransform(
                 scaleX: bounds.width / lowBounds.width, y: bounds.height / lowBounds.height))
                 .clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 1.2]).cropped(to: bounds)
+            }
             lastSegmentationMilliseconds = Double(DispatchTime.now().uptimeNanoseconds-segmentationStarted)/1_000_000
             personMask = fullMask
-            if (settings.blurEnabled && settings.blurRadius > 0) || backgroundImage != nil {
-            var background = image.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: settings.blurRadius * bounds.width / 1280]).cropped(to: bounds)
+            if (settings.blurEnabled && (settings.composerBokehRadius ?? settings.blurRadius) > 0) || backgroundImage != nil {
+            var background: CIImage
+            if settings.blurEnabled, let radius = settings.composerBokehRadius {
+                background = try ComposerBokeh().apply(image, personMask: fullMask, radius: radius, context: context)
+            } else {
+                background = image.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: settings.blurRadius * bounds.width / 1280]).cropped(to: bounds)
+            }
             if let replacement = backgroundImage {
                 let factor = max(bounds.width / replacement.extent.width, bounds.height / replacement.extent.height)
                 let scaled = replacement.transformed(by: .init(scaleX: factor, y: factor))
                 background = scaled.transformed(by: .init(translationX: (bounds.width - scaled.extent.width) / 2 - scaled.extent.minX,
                                                            y: (bounds.height - scaled.extent.height) / 2 - scaled.extent.minY)).cropped(to: bounds)
             }
-            image = image.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: background,
-                                                                         kCIInputMaskImageKey: fullMask])
+            if settings.blurEnabled && settings.composerBokehRadius != nil && backgroundImage == nil {
+                image = background // native pass already uses the person mask to control its sampling footprint
+            } else {
+                image = image.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: background,
+                                                                             kCIInputMaskImageKey: fullMask])
+            }
             }
         } else {
             previousMask = nil
@@ -137,18 +155,35 @@ public final class EffectsProcessor {
         if let sample=settings.whiteBalanceSampleRGB {
             image=WhitePointCorrection.apply(to:image,sampleRGB:sample)
         }
-        image = image.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: settings.exposure])
-        image = image.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: settings.contrast,
+        // Only independent digital adjustments enter this pipeline. Imported
+        // composerExposure/composerWhiteBalance are camera-control intents;
+        // hardware availability must never turn -3 into a 1/8 pixel multiplier
+        // or 4250 K into an orange cast on an already balanced camera frame.
+        if settings.exposure != 0 {
+            image = image.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: settings.exposure])
+        }
+        image = image.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: settings.composerContrast == nil ? settings.contrast : 1,
                                                                      kCIInputSaturationKey: settings.saturation])
+        if settings.warmth != 0 {
         image = image.applyingFilter("CITemperatureAndTint", parameters: [
             "inputNeutral": CIVector(x: 6500, y: 0),
             "inputTargetNeutral": CIVector(x: 6500 + settings.warmth, y: 0)
         ])
+        }
         guard let locallyAdjusted = ComposerLighting.applyShadowsHighlights(to: image, shadow: settings.shadows, highlight: settings.highlights - 1) else {
             throw ProcessingError.colorRendererUnavailable
         }
         image = locallyAdjusted
-        image = image.applyingFilter("CIVibrance", parameters: ["inputAmount": settings.vibrance])
+        if let contrast = settings.composerContrast, contrast.enabled && !contrast.automatic {
+            guard let contrasted = ComposerCLAHE.apply(to: image, clipLimit: contrast.value) else {
+                throw ProcessingError.colorRendererUnavailable
+            }
+            image = contrasted
+        }
+        guard let vibrant = ComposerVibrance.apply(to: image, amount: settings.vibrance) else {
+            throw ProcessingError.colorRendererUnavailable
+        }
+        image = vibrant
         }
         // Recovered FiltersTabPipeline order places Pixellate before global
         // tint and the HSV wheel, so blocks receive the same color transfer.

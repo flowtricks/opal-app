@@ -81,3 +81,23 @@ Build 12 passed 60 Core and 10 Bridge tests, universal archive, Developer ID sig
 Installed build 12 background check: NSRunningApplication independently reported PID 74799 `hidden=true active=false`. From the post-hide checkpoint to the final hidden checkpoint, the independent virtual-camera receiver advanced from 79 to 1,573 frames (about 50 seconds at 30 fps), while capture advanced from 1,210 to 2,700. Capture drops, processing failures, recovery attempts, interruptions, repeated frames, invalid timestamps, alpha-fault frames, and unexpected dimensions all remained zero. Maximum consumer gap over the run was 73.4 ms. This verifies continued local 720p delivery while hidden on this Mac, not sustained Meet/Zoom performance or every resolution.
 
 The distributed ZIP was separately extracted and passed strict deep code-signature verification, stapler validation, and Gatekeeper assessment. Build 12 ZIP SHA-256: `2afb98799b9d1f0aa3a038b79b05b1ac3925f753d3d69d8c228f2a6364785d35`.
+
+
+## Build 12 failure and physical-control isolation
+
+The user's build12 replug check still failed. IORegistry again alternated stock Opal C1 and Luxonis Bootloader roughly every16.7seconds. The main process was reused by its helper. A later main-process change followed a normal AppKit-approved termination, not a captured crash. The user reported slow/failed loading and repeated random stops. Build12 was not published as a GitHub release.
+
+With Studio capture stopped, QuickTime Player's physical C1 preview stayed live for several minutes on the same USB registry entry. A production focus-control-only handle was opened, held20seconds, then closed without any SET requests; capture remained stable. Read-only metadata found WB auto1, temperature GET_INFO3, auto GET_INFO1, temperature range2810…6500 and step10. A bounded native-Composer sequence succeeded: auto SET0/read0; manual temperature GET5800; SET4250/read4250; restored5800 then autoSET1/read1. This identifies the previous GET_CUR stall as dependent on automatic mode. It does not justify treating a failed initial GET_CUR as missing write support.
+
+A separately bounded exposure test found backlight selector1 INFO3, range0…18, current0. Composer raw−3 maps to register12; SET12/read12 succeeded, then SET0/read0 restored the original. Production read APIs subsequently returned WB auto1/temperature-valid0/range2810…6500/step10 and exposure raw0/Composer0/range0…18/step1. No firmware/reset commands were used.
+
+## Build 13 runtime checkpoint
+
+Build13 fully releases stale capture inputs/outputs/device on stop/disconnect, defers hardware controls until first valid frames, and uses the native resolution session preset rather than forcing the first enumerated equal-sized activeFormat. It passed67Core+10Bridge tests, universal archive, Developer ID notarization, stapler and Gatekeeper. Installed launch automatically selected C1 and migrated the selected imported preset's old physical exposure/WB conversions. The UI showed4250K and−3 with both controls available; a manual CameraOff→On resumed without app relaunch. The imported preset still lacked verified bokeh/ToneSync/saturation handling at this checkpoint; those are subsequent work.
+
+After that capture restart, a local720p checkpoint showed2,752captured/processed/output frames, zero capture drops/processing failures/recovery attempts/interruptions/repeated frames. Independent consumer received1,406frames, zero invalid timestamps/alpha faults/unexpected dimensions,176fullalpha scans and46.5ms maximum delivery gap. Capture processing was15.9ms, output wait0.0ms. Physical replug test remains pending.
+
+
+## Build13 reconnect result (not a stability pass)
+
+Physical replug still caused C1 stock→Luxonis Bootloader cycles separated by approximately16.7seconds. Fresh cold startup and manual cameraOff/On could stream, but that does not validate USBreconnect. Build13 must not be described as resolving the restart loop. Original UVCService disassembly subsequently confirmed a new AVCaptureSession for each setup and a1second arrival delay; Studio had retained a single session object even after removing inputs/outputs. Build14 source now recreates sessions and rejects notifications from released sessions. This is an evidence-backed correction awaiting physical runtime validation, not proof of causation.

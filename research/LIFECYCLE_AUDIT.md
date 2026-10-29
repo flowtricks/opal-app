@@ -97,3 +97,18 @@ Read-only audit found three independent full-session rebuild entry points: devic
 Four new tests cover concurrent request coalescing, old completion invalidation, main-queue status staleness, and retry-budget preservation during physical absence. Installed USB replug stability remains a runtime verification requirement, particularly for the separate stock-control changes.
 
 A final startup timing fix resets the source-frame grace baseline after blocking `AVCaptureSession.startRunning()` returns. Previously a slow USB session start could consume the entire2-second watchdog grace before the new stream had any chance to deliver a frame, causing immediate unnecessary recovery. The old source timestamp is cleared when reconfiguration starts; a fresh frame already received during startup is preserved.
+
+## Static loader composition follow-up
+
+Original and installed replacement movie hashes match8ac7c6f97d6e19ffb52f87b4382c0fd9756047d77ba3d24b76eef4ad43397ed8. Native AVFoundation reports ContainsAlphaChannel1 and PremultipliedAlpha; decodedBGRA corner pixels are[0,0,0,0], with alpha0…254 in the first frame. ffmpeg's black corners do not imply opaque source content.
+
+Original CameraViewContainerState owns separate spin/loading models. Factory0x1002049b0 builds1_<model>_Spin_<color>.mp4;0x100204cf8 builds a playlist beginning2_<model>_Twist_<color>.mp4 followed by ten3_<model>_Endloop_<color>.mp4 entries. SwiftUI frame construction0x10016fde8 and0x100170044 uses425×300pt, centered. Native TransitioningPlayerView holds two AVPlayerLayers and lays them into aspect-fitted bounds. Square source content may therefore remain300×300; the outer width alone does not establish a visible size difference.
+
+The UI reads AppState.loadingVideoState (keypath0x100666ee0→getter0x10028f42c→storage0x1006779c8→ivar0x1008361e8). Metadata cases are spinning0/loading1/done2. CameraLoadingStatus cases are never0/notLoaded1/isLoading2/loaded3/hidden4. Handler0x1001703e0 checks captured initialization status; loaded advances to done, while a spinning state with isLoading/loaded advances to loading through SwiftUI default animation at0x10017072c and closure0x100170798. The sequence is state-driven, not a guessed fixed delay. This is static evidence only; no original app launch or hardware action was performed.
+
+
+## Build14 evidence corrections
+
+Native UVCService creates a new AVCaptureSession per setup, clears it before teardown, waits1second after arrival, and chooses the first exact dimension-matching activeFormat before constructing the session. The earlier main-only conclusion that Composer never writes activeFormat was incomplete. Build14 matches the recovered normal720/1080/2160 path, rejects stale-session notifications, and does not force frame durations.
+
+The loading resource sequence is spin while waiting for enumeration, then the original twist plus ten end-loop segments while setting up capture. No status text or artificial delay is added; actual video readiness removes the loader. This maps our capture states to the original resources, and does not prove identical original state timing.

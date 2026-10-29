@@ -1,4 +1,5 @@
 import XCTest
+import Metal
 import CoreVideo
 @testable import OpalCore
 
@@ -121,14 +122,19 @@ final class OpalCoreTests: XCTestCase {
         CVPixelBufferUnlockBaseAddress(source, [])
         var blurSettings = CameraSettings()
         blurSettings.effectsEnabled = false // Bokeh is independent of the Effects panel.
-        for _ in 0..<2 {
+        for index in 0..<2 {
             let frame = try processor.process(source, settings: blurSettings)
             CVPixelBufferLockBaseAddress(frame, .readOnly)
             let output = CVPixelBufferGetBaseAddress(frame)!.assumingMemoryBound(to: UInt8.self)
             let center = 360 * CVPixelBufferGetBytesPerRow(frame) + 640 * 4
             XCTAssertEqual(output[center + 3], 255)
-            XCTAssertGreaterThan(output[center],70)
-            XCTAssertLessThan(output[center],190)
+            if index == 0 && ComposerPersonSegmenter.usesAppleVision(gpuName: MTLCreateSystemDefaultDevice()?.name ?? "") {
+                // Composer's first frame is all-foreground while Vision warms up.
+                XCTAssertEqual(output[center], 210, accuracy: 1)
+            } else {
+                XCTAssertGreaterThan(output[center],70)
+                XCTAssertLessThan(output[center],190)
+            }
             CVPixelBufferUnlockBaseAddress(frame, .readOnly)
         }
     }

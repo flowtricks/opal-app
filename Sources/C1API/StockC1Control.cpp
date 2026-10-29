@@ -16,7 +16,7 @@
 #include <vector>
 namespace {
 struct Terminal { uint8_t interface, entity; bool absolute, automatic; };
-struct Processing { uint8_t interface, entity; bool temperature, automatic; };
+struct Processing { uint8_t interface, entity; bool temperature, automatic, backlight, saturation; };
 static uint16_t le16(const uint8_t *p) { return uint16_t(p[0]) | uint16_t(p[1]) << 8; }
 static std::vector<Terminal> parse(const uint8_t *bytes, size_t size) {
     std::vector<Terminal> result;
@@ -44,7 +44,7 @@ static std::vector<Processing> parseProcessing(const uint8_t *bytes, size_t size
         if(control && p[1] == 0x24 && length >= 9 && p[2] == 5) {
             const size_t n = p[7]; if(n > length - 8) throw std::runtime_error("Truncated processing-unit controls");
             auto bit = [&](int index) { return size_t(index / 8) < n && (p[8 + index / 8] & (1 << (index % 8))); };
-            result.push_back({interface, p[3], bool(bit(6)), bool(bit(12))});
+            result.push_back({interface, p[3], bool(bit(6)), bool(bit(12)), bool(bit(8)), bool(bit(3))});
         }
         offset += length;
     }
@@ -135,7 +135,7 @@ public:
     }
     uint16_t request(Terminal t, uint8_t selector, uint8_t request, size_t length, uint16_t value = 0) {
         uint8_t bytes[2] = {uint8_t(value), uint8_t(value >> 8)};
-        if(length != 1 && length != 2) throw std::runtime_error("Invalid focus transfer length");
+        if(length != 1 && length != 2) throw std::runtime_error("Invalid UVC transfer length");
         IOUSBDevRequestTO transfer{};
         transfer.noDataTimeout = 700; transfer.completionTimeout = 1000;
         transfer.bmRequestType = request == 1 ? 0x21 : 0xa1;
@@ -144,7 +144,7 @@ public:
         char operation[128];
         std::snprintf(operation, sizeof operation, "UVC request (entity %u, interface %u, selector 0x%02x, request 0x%02x, length %zu)", t.entity, t.interface, selector, request, length);
         check((*usb)->DeviceRequestTO(usb, &transfer), operation);
-        if(transfer.wLenDone != length) throw std::runtime_error("UVC focus transfer returned unexpected length");
+        if(transfer.wLenDone != length) throw std::runtime_error("UVC transfer returned unexpected length");
         return length == 1 ? bytes[0] : le16(bytes);
     }
 };
@@ -159,6 +159,8 @@ struct StockC1Control {
     Device device;
     Terminal terminal;
     StockC1FocusState cached{};
+    int32_t requestedWhiteBalance = 0;
+    int32_t lastManualWhiteBalance = 0;
     explicit StockC1Control(const std::string &serial) : device(serial), terminal(device.terminal()) {
         if(!terminal.absolute || !terminal.automatic) throw std::runtime_error("C1 focus controls are not advertised");
         const auto absoluteInfo = device.request(terminal, 6, 0x86, 1);
@@ -189,18 +191,65 @@ struct StockC1Control {
         value.automatic_info = device.request(target, 11, 0x86, 1);
         if(!(value.temperature_info & 1) || !(value.automatic_info & 1))
             throw std::runtime_error("C1 white balance controls are not readable");
-        value.temperature = device.request(target, 10, 0x81, 2);
+        // Verified C1 quirk: manual GET_CUR stalls while automatic mode is on.
+        // Read the mode first; never turn auto off merely to inspect metadata.
+        value.automatic = device.request(target, 11, 0x81, 1);
+        if(value.automatic > 1) throw std::runtime_error("Invalid C1 white balance mode");
+        value.temperature_valid = !value.automatic;
+        if(value.temperature_valid) lastManualWhiteBalance = device.request(target, 10, 0x81, 2);
+        value.temperature = lastManualWhiteBalance;
+        value.requested_temperature = requestedWhiteBalance;
         value.minimum = device.request(target, 10, 0x82, 2);
         value.maximum = device.request(target, 10, 0x83, 2);
-        value.automatic = device.request(target, 11, 0x81, 1);
-        if(value.minimum >= value.maximum || value.automatic > 1) throw std::runtime_error("Unexpected C1 white balance range/state");
+        value.resolution = device.request(target, 10, 0x84, 2);
+        if(value.minimum >= value.maximum) throw std::runtime_error("Unexpected C1 white balance range/state");
         return value;
     }
     void automaticWhiteBalance(Terminal target, bool enabled) {
         const auto info = device.request(target, 11, 0x86, 1);
-        if((info & 3) != 3 || (info & 4)) throw std::runtime_error("C1 automatic white balance is not writable");
+        // Stock C1 f63d reports GET-only, but Composer writes this selector.
+        // Verified with auto0 -> 4250K readback -> original5800K -> auto1.
+        if(!(info & 1) || (info & 0x24)) throw std::runtime_error("C1 automatic white balance is unavailable");
         device.request(target, 11, 1, 1, enabled ? 1 : 0);
         if(device.request(target, 11, 0x81, 1) != int(enabled)) throw std::runtime_error("C1 white balance mode did not accept the change");
+    }
+    Terminal exposureTerminal() {
+        const auto unit = device.processing();
+        if(!unit.backlight) throw std::runtime_error("C1 exposure compensation is not advertised");
+        return {unit.interface, unit.entity, true, false};
+    }
+    StockC1ExposureState readExposure() {
+        const auto target = exposureTerminal();
+        StockC1ExposureState state{};
+        state.info = device.request(target, 1, 0x86, 1);
+        if(!(state.info & 1) || (state.info & 0x20)) throw std::runtime_error("C1 exposure compensation is unreadable");
+        state.minimum = device.request(target, 1, 0x82, 2);
+        state.maximum = device.request(target, 1, 0x83, 2);
+        state.resolution = device.request(target, 1, 0x84, 2);
+        state.value = device.request(target, 1, 0x81, 2);
+        if(state.minimum > state.maximum || state.value < state.minimum || state.value > state.maximum)
+            throw std::runtime_error("Unexpected C1 exposure compensation range");
+        state.composer_value = state.value > 9 ? 9 - state.value : state.value;
+        return state;
+    }
+    Terminal saturationTerminal() {
+        const auto unit = device.processing();
+        if(!unit.saturation) throw std::runtime_error("C1 saturation is not advertised");
+        return {unit.interface, unit.entity, true, false};
+    }
+    StockC1SaturationState readSaturation() {
+        const auto target = saturationTerminal();
+        StockC1SaturationState state{};
+        state.info = device.request(target, 7, 0x86, 1);
+        if(!(state.info & 1) || (state.info & 0x20)) throw std::runtime_error("C1 saturation is unreadable");
+        state.minimum = device.request(target, 7, 0x82, 2);
+        state.maximum = device.request(target, 7, 0x83, 2);
+        state.resolution = device.request(target, 7, 0x84, 2);
+        state.value = device.request(target, 7, 0x81, 2);
+        if(state.minimum >= state.maximum || state.value < state.minimum || state.value > state.maximum)
+            throw std::runtime_error("Unexpected C1 saturation range");
+        state.composer_value = (state.value-state.minimum)*20/(state.maximum-state.minimum)-10;
+        return state;
     }
     void automatic(bool enabled) {
         device.request(terminal, 8, 1, 1, enabled ? 1 : 0);
@@ -288,16 +337,27 @@ int32_t stock_c1_set_white_balance(StockC1Control *control, int32_t kelvin, Stoc
         const auto target = control->whiteBalanceTerminal();
         const auto info = control->device.request(target, 10, 0x86, 1);
         if((info & 3) != 3) throw std::runtime_error("C1 white balance temperature is not writable");
-        if(old.automatic) control->automaticWhiteBalance(target, false);
         try {
-            if(control->device.request(target, 10, 0x86, 1) & 4) throw std::runtime_error("C1 manual white balance remains disabled");
+            if(old.automatic) control->automaticWhiteBalance(target, false);
+            if(control->device.request(target, 10, 0x86, 1) & 0x24) throw std::runtime_error("C1 manual white balance remains disabled");
             // Original Composer clamps integer Kelvin directly to device bounds.
             const auto value = std::max(old.minimum, std::min(old.maximum, kelvin));
             control->device.request(target, 10, 1, 2, uint16_t(value));
-            *state = control->readWhiteBalance(); return 1;
-        } catch(...) {
-            if(old.automatic) { try { control->automaticWhiteBalance(target, true); } catch(...) {} }
-            throw;
+            *state = control->readWhiteBalance();
+            // Firmware may quantize to GET_RES. Publish actual bounded Kelvin
+            // rather than treating normal quantization as a failed adjustment.
+            if(!state->temperature_valid || state->temperature < state->minimum || state->temperature > state->maximum)
+                throw std::runtime_error("C1 white balance returned an invalid temperature");
+            control->requestedWhiteBalance = kelvin;
+            state->requested_temperature = kelvin;
+            return 1;
+        } catch(const std::exception &failure) {
+            std::string message = failure.what();
+            if(old.automatic) {
+                try { control->automaticWhiteBalance(target, true); }
+                catch(const std::exception &restore) { message += std::string(" Auto white balance restoration failed: ") + restore.what(); }
+            }
+            throw std::runtime_error(message);
         }
     } catch(const std::exception &e) { copyText(error, errorSize, e.what()); return 0; }
 }
@@ -308,6 +368,54 @@ int32_t stock_c1_set_auto_white_balance(StockC1Control *control, int32_t enabled
         if(enabled != 0 && enabled != 1) throw std::runtime_error("White balance mode must be on or off");
         control->automaticWhiteBalance(control->whiteBalanceTerminal(), enabled != 0);
         *state = control->readWhiteBalance(); return 1;
+    } catch(const std::exception &e) { copyText(error, errorSize, e.what()); return 0; }
+}
+int32_t stock_c1_read_exposure(StockC1Control *control, StockC1ExposureState *state, char *error, size_t errorSize) {
+    copyText(error, errorSize, "");
+    try {
+        if(!control || !state) throw std::runtime_error("C1 control is closed");
+        *state = control->readExposure(); return 1;
+    } catch(const std::exception &e) { copyText(error, errorSize, e.what()); return 0; }
+}
+int32_t stock_c1_set_exposure(StockC1Control *control, int32_t composerValue, StockC1ExposureState *state, char *error, size_t errorSize) {
+    copyText(error, errorSize, "");
+    try {
+        if(!control || !state) throw std::runtime_error("C1 control is closed");
+        const auto previous = control->readExposure();
+        if((previous.info & 3) != 3 || (previous.info & 0x24)) throw std::runtime_error("C1 exposure compensation is not writable");
+        // Native Composer mapping, verified on stock C1: -3 -> register12,
+        // readback12; restored register0 with readback0 while capture stayed live.
+        const int64_t mapped = composerValue < 0 ? -int64_t(composerValue) + 9 : composerValue;
+        if(mapped < previous.minimum || mapped > previous.maximum) throw std::runtime_error("Exposure compensation is outside C1 range");
+        control->device.request(control->exposureTerminal(), 1, 1, 2, uint16_t(mapped));
+        *state = control->readExposure();
+        if(state->value != mapped) throw std::runtime_error("C1 exposure compensation did not accept the change");
+        state->composer_value = composerValue;
+        return 1;
+    } catch(const std::exception &e) { copyText(error, errorSize, e.what()); return 0; }
+}
+int32_t stock_c1_read_saturation(StockC1Control *control, StockC1SaturationState *state, char *error, size_t errorSize) {
+    copyText(error, errorSize, "");
+    try {
+        if(!control || !state) throw std::runtime_error("C1 control is closed");
+        *state = control->readSaturation(); return 1;
+    } catch(const std::exception &e) { copyText(error, errorSize, e.what()); return 0; }
+}
+int32_t stock_c1_set_saturation(StockC1Control *control, int32_t composerValue, StockC1SaturationState *state, char *error, size_t errorSize) {
+    copyText(error, errorSize, "");
+    try {
+        if(!control || !state) throw std::runtime_error("C1 control is closed");
+        if(composerValue < -10 || composerValue > 10) throw std::runtime_error("Composer saturation is outside -10...10");
+        const auto previous = control->readSaturation();
+        if((previous.info & 3) != 3 || (previous.info & 0x24)) throw std::runtime_error("C1 saturation is not writable");
+        // UVCCameraDevice mapValue0x100007444 uses integer division, not a
+        // software RGB multiplier. Main truncates the stored value before send.
+        const int32_t mapped = (previous.maximum-previous.minimum)*(composerValue+10)/20+previous.minimum;
+        control->device.request(control->saturationTerminal(), 7, 1, 2, uint16_t(mapped));
+        *state = control->readSaturation();
+        if(state->value != mapped) throw std::runtime_error("C1 saturation did not accept the change");
+        state->composer_value = composerValue;
+        return 1;
     } catch(const std::exception &e) { copyText(error, errorSize, e.what()); return 0; }
 }
 void stock_c1_close(StockC1Control *control) { delete control; }

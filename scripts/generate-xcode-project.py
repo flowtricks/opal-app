@@ -36,7 +36,7 @@ def build_settings(target, debug):
         ENABLE_HARDENED_RUNTIME='YES', ONLY_ACTIVE_ARCH='YES' if debug else 'NO', CLANG_ENABLE_MODULES='YES', ENABLE_USER_SCRIPT_SANDBOXING='YES',
         SWIFT_OPTIMIZATION_LEVEL='-Onone' if debug else '-O', DEBUG_INFORMATION_FORMAT='dwarf' if debug else 'dwarf-with-dsym',
         SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG' if debug else '',
-        CURRENT_PROJECT_VERSION='12', MARKETING_VERSION='0.1.0')
+        CURRENT_PROJECT_VERSION='14', MARKETING_VERSION='0.1.0')
     if target == 'app':
         values.update(PRODUCT_BUNDLE_IDENTIFIER='com.timothyricks.opal-app', PRODUCT_NAME='OpalStudio',
             INFOPLIST_FILE='Config/App-Info.plist', CODE_SIGN_ENTITLEMENTS='Config/App.entitlements',
@@ -107,7 +107,7 @@ license_phase=add('EmbedC1Licenses','PBXCopyFilesBuildPhase', name='Embed C1 Lic
 resource_builds=[]
 resource_refs=[]
 for file in sorted((ROOT/'Resources').glob('*')):
-    ref=add('resource '+file.name,'PBXFileReference', path='Resources/'+file.name, sourceTree='SOURCE_ROOT', lastKnownFileType={'.icns':'image.icns','.mp4':'video.mpeg4'}.get(file.suffix,'image.png'))
+    ref=add('resource '+file.name,'PBXFileReference', path='Resources/'+file.name, sourceTree='SOURCE_ROOT', lastKnownFileType={'.icns':'image.icns','.mp4':'video.mpeg4','.mlmodelc':'folder'}.get(file.suffix,'image.png'))
     resource_refs.append(ref)
     resource_builds.append(add('copy resource '+file.name,'PBXBuildFile',fileRef=ref))
 main_children.append(add('AppResourcesGroup','PBXGroup', name='Resources', sourceTree='<group>',children=resource_refs))

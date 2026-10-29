@@ -48,3 +48,22 @@ This release integrates proven physical focus and white balance through the sepa
 ## Main-app decompilation bound
 
 The optional REA/Ghidra main-app pseudocode request reached its configured330-second startup deadline before import completed (`main-tint.json`). No main-app pseudocode was produced or used as evidence. The concrete tint/WB/exposure instructions cited above are from the complete LLVM arm64 disassembly and decoded Mach-O constants, cross-checked against recovered XPC semantics. XPC pipeline decompilation succeeded. Both sessions were exported and closed, without repeating the timed-out main import.
+
+## Imported preset correction — 2026-10-29
+
+Read-only inspection of Studio's selected imported `Opal Color Edits` archive confirmed exposure −3, temperature4250K, saturation2, vibrance0.3, and selective HSV arrays. The old importer copied −3 directly to `CIExposureAdjust` and4250K to a6500→4250 `CITemperatureAndTint` transform. Those substitutions were incorrect: the former multiplies pixels by1/8; the latter warms an already balanced frame. A native Core Image neutral-gray check produced RGB[0.27814,0.20489,0.12314] for that temperature transform, confirming the orange direction. Original Composer sends both values to physical camera controls; there is no verified device-independent software equivalence.
+
+CameraSettings now distinguishes optional `composerExposure` and `composerWhiteBalance` intents (value/automatic/enabled) from independent digital exposure/warmth. Import retains physical values and neutralizes the erroneous digital substitutes. Export preserves the physical values/flags. `migratingPhysicalLighting(settings:archive:)` repairs previously imported settings only when their old digital fields still exactly match the archived incorrect conversion; unrelated edits stay intact. Runtime UI/hardware availability is handled by the app integration, not by synthesizing a look in the renderer. This correction does not establish physical parity on unsupported cameras.
+
+A rendered regression feeds neutral pixels through the full effects processor with imported4250K/−3 physical intent and verifies identical output to neutral settings. Targeted codec tests pass9/9, including mode preservation, archive round trip, migration and old JSON compatibility. No physical camera was opened or written by this work.
+
+Physical exposure protocol evidence: original UVC factory0x10000403c constructs PU selector0x01 with2bytes; UVC service0x10001f118 maps negative signedInt32 n to−n+9, otherwise retains n, then verifies it fitsUInt16 and calls setBacklightCompensation. The setter0x1000073b0 forwards to UVCIntControl current. A safe implementation must require descriptor PUbacklight bit8 and GET_INFO0x86 support, query current/min/max/resolution using0x81/82/83/84 (2bytes), then send SET_CUR0x01 (2bytes) only within verified writable bounds and verify current. Do not assume that firmware compensation units equal photographic stops or that another camera's exposure bias matches them.
+
+
+## Build14 corrections (supersedes approximation notes above)
+
+The native contrast control is software CLAHE, not the unused UVC contrast method. `slider-mappings.md` records main-app callsites: raw0...2, step0.02, display0...100%; Auto preserves the manual value and bypasses CLAHE. The renderer implements 2×2 lightness histograms,256bins, native clip limit/redistribution/CDFquantization and interpolation on Metal. Manualzero remains an active clip limit. Recovered vibrance replaces CIVibrance, retaining the original skin protection and polynomial coefficients. Both have independent rendered golden tests.
+
+Imported nonzero highlights/shadows now map directly to their recovered shader uniforms (own highlights schema stores native+1). Temperature UI uses native2000...7000K/reset4500/step50; physical writes remain clamped to the C1-reported2810...6500K range. Camera saturation is separate from digital saturation: the imported raw2 becomes firmware register60 on this C1's0...100 range. A bounded production-API test on2026-10-29 verified SET2→readback60, then restored the exact prior register50. No reset or firmware command was used.
+
+Build14 integrated tests:86Core+10Bridge pass. These establish individual equations, mode preservation, mask precision and lifecycle guards; they do not establish full original image equality or USBreconnect reliability. Live comparison remains required before that claim.

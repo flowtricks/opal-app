@@ -54,22 +54,47 @@ public enum ComposerPresetCodec {
         try moduleEnabled("faceLock", \.faceLockEnabled)
         try moduleEnabled("bokeh", \.blurEnabled)
         let bokeh = try section(modules, "bokeh")
-        if try number(bokeh, "bokeh") != nil { warnings.append("Bokeh strength is retained but not converted; its kernel and strength mapping differ.") }
+        if let radius = try number(bokeh, "bokeh") {
+            result.composerBokehRadius = radius; applied.append("bokeh.bokeh")
+        }
         let zoom = try section(modules, "zoom")
-        if try flag(zoom, "enabled") == false || number(zoom, "zoom") == 0 { result.zoom = 1; applied.append("zoom.neutral") }
-        else if try number(zoom, "zoom") != nil { warnings.append("Nonzero zoom is retained but its scale is not mapped.") }
+        if try flag(zoom, "enabled") == false {
+            result.zoom = 1; applied.append("zoom.disabled")
+        } else if let amount = try number(zoom, "zoom") {
+            // Native ZoomFilter (0x1000102f8): crop size = input size / (1 + 1.5 * amount).
+            result.zoom = 1 + 1.5 * amount; applied.append("zoom.zoom")
+        }
 
         let lighting = try section(modules, "lighting")
-        // Stored-to-display calibration: observed raw saturation2 displays20%,
-        // while native UI20% is a1.2 multiplier. This does not establish pixel parity.
+        // Camera saturation is physical UVC intent; custom tint and vibrance are pixel effects.
         let fields: [(String, String, String, WritableKeyPath<CameraSettings, Double>, (Double) -> Double)] = [
-            ("whiteBalance", "balance", "warmth", \.warmth, { $0 - 6500 }),
             ("tint", "tint", "tint", \.tint, { $0 }),
-            ("exposure", "exposure", "exposure", \.exposure, { $0 }),
-            ("saturation", "saturation", "saturation", \.saturation, { 1 + $0 / 10 }),
             ("vibrance", "vibrance", "vibrance", \.vibrance, { $0 })
         ]
         let defaults = CameraSettings()
+        if let intent = try physicalAdjustment(lighting, module: "whiteBalance", key: "balance", neutral: 6500) {
+            result.composerWhiteBalance = intent
+            result.warmth = 0; result.whiteBalanceSampleRGB = nil
+            if intent.requestsManualValue { result.manualLightingFields.insert("warmth") }
+            else { result.manualLightingFields.remove("warmth") }
+            applied.append("lighting.whiteBalance.physical")
+        }
+        if let intent = try physicalAdjustment(lighting, module: "exposure", key: "exposure", neutral: 0) {
+            result.composerExposure = intent
+            result.exposure = 0
+            if intent.requestsManualValue { result.manualLightingFields.insert("exposure") }
+            else { result.manualLightingFields.remove("exposure") }
+            applied.append("lighting.exposure.physical")
+        }
+        if let intent = try physicalAdjustment(lighting, module: "saturation", key: "saturation", neutral: 0) {
+            result.composerSaturation = intent; result.saturation = 1
+            if intent.requestsManualValue { result.manualLightingFields.insert("saturation") }
+            else { result.manualLightingFields.remove("saturation") }
+            applied.append("lighting.saturation.physical")
+        }
+        if result.composerExposure?.requestsManualValue == true || result.composerWhiteBalance?.requestsManualValue == true {
+            warnings.append("Composer exposure and temperature require supported camera controls; their physical values are retained without substituting digital darkening or color shifts.")
+        }
         for (module, key, nativeKey, path, conversion) in fields {
             let entry = try section(lighting, module)
             let automatic = try flag(entry, "auto")
@@ -82,18 +107,23 @@ public enum ComposerPresetCodec {
                 applied.append("lighting.\(module)")
             }
         }
-        if lighting["saturation"] != nil { warnings.append("Lighting values transfer using observed UI scales; Composer's rendering response may differ.") }
-        for (module, path) in [("highlights", \CameraSettings.highlights), ("shadows", \CameraSettings.shadows), ("contrast", \CameraSettings.contrast)] {
+        for (module, path, neutral) in [("highlights", \CameraSettings.highlights, 1.0), ("shadows", \CameraSettings.shadows, 0.0)] {
             let entry = try section(lighting, module)
             let automatic = try flag(entry, "auto")
             if automatic == false { result.manualLightingFields.insert(module) }
             else if automatic == true { result.manualLightingFields.remove(module) }
-            let enabled = try flag(entry, "enabled")
             if let value = try number(entry, module) {
-                if value == 0 || automatic == true || enabled == false {
-                    result[keyPath: path] = defaults[keyPath: path]; applied.append("lighting.\(module).neutral")
-                } else { warnings.append("Nonneutral \(module) is retained; its response is not mapped.") }
+                let enabled = try flag(entry, "enabled")
+                result[keyPath: path] = automatic == true || enabled == false ? neutral : value + neutral
+                applied.append("lighting.\(module)")
             }
+        }
+        if lighting["contrast"] != nil {
+            let entry = try section(lighting, "contrast")
+            result.composerContrast = .init(value: try number(entry, "contrast") ?? 0,
+                automatic: try flag(entry, "auto") ?? false, enabled: try flag(entry, "enabled") ?? true)
+            result.contrast = 1
+            applied.append("lighting.contrast.clahe")
         }
         let balance = try section(lighting, "whiteBalance")
         if let color = balance["color"], !(color is NSNull) { warnings.append("White-balance sampled color metadata is retained but not converted.") }
@@ -121,7 +151,10 @@ public enum ComposerPresetCodec {
         }
         let tone = try section(effects, "toneSync")
         if try flag(tone, "enabled") == false { result.toneSync = 0; applied.append("effects.toneSync.disabled") }
-        else if !tone.isEmpty { warnings.append("Tone Sync adjustment is retained; it is not assumed to be effect strength.") }
+        else if let amount = try number(tone, "adjustment") {
+            // Native0x100186c60 forwards stored amount unchanged; CIFaceBalance uses 2 * amount.
+            result.toneSync = amount; applied.append("effects.toneSync.adjustment")
+        }
         let filters = try section(effects, "filters")
         if try flag(filters, "enabled") == false { result.photoFilter = nil; applied.append("effects.filters.disabled") }
         else if !filters.isEmpty { warnings.append("Filter selection is retained; its serialized identity is not mapped.") }
@@ -152,14 +185,13 @@ public enum ComposerPresetCodec {
         try set("effects", "enabled", settings.effectsEnabled)
         try set("faceLock", "enabled", settings.faceLockEnabled)
         try set("bokeh", "enabled", settings.blurEnabled)
-        // No guessed bokeh radius or nonzero zoom is emitted for new documents.
-        if settings.zoom == 1 { try set("zoom", "enabled", true); try set("zoom", "zoom", 0) }
+        if let radius = settings.composerBokehRadius { try set("bokeh", "bokeh", radius) }
+        // Zoom's native scale is recovered from ZoomFilter.
+        try set("zoom", "enabled", true)
+        try set("zoom", "zoom", (settings.zoom - 1) / 1.5)
         var lighting = try section(modules, "lighting")
         for (module, key, nativeKey, value) in [
-            ("whiteBalance", "balance", "warmth", settings.warmth + 6500),
             ("tint", "tint", "tint", settings.tint),
-            ("exposure", "exposure", "exposure", settings.exposure),
-            ("saturation", "saturation", "saturation", (settings.saturation - 1) * 10),
             ("vibrance", "vibrance", "vibrance", settings.vibrance)
         ] {
             var entry = try section(lighting, module)
@@ -167,12 +199,30 @@ public enum ComposerPresetCodec {
             entry[key] = value; entry["auto"] = !settings.manualLightingFields.contains(nativeKey) && value == neutral; entry["enabled"] = true
             lighting[module] = entry
         }
-        for (module, value, neutral) in [("highlights", settings.highlights, 1.0), ("shadows", settings.shadows, 0.0), ("contrast", settings.contrast, 1.0)] where value == neutral {
+        for (module, value, neutral) in [("highlights", settings.highlights, 1.0), ("shadows", settings.shadows, 0.0)] {
             var entry = try section(lighting, module)
-            entry[module] = 0; entry["auto"] = !settings.manualLightingFields.contains(module); entry["enabled"] = true
+            entry[module] = value - neutral; entry["auto"] = !settings.manualLightingFields.contains(module); entry["enabled"] = true
             lighting[module] = entry
         }
+        for (module, key, intent) in [("whiteBalance", "balance", settings.composerWhiteBalance),
+                                       ("exposure", "exposure", settings.composerExposure),
+                                       ("saturation", "saturation", settings.composerSaturation)] {
+            if let intent {
+                var entry = try section(lighting, module)
+                entry[key] = intent.value; entry["auto"] = intent.automatic; entry["enabled"] = intent.enabled
+                lighting[module] = entry
+            }
+        }
+        if let contrast = settings.composerContrast {
+            var entry = try section(lighting, "contrast")
+            entry["contrast"] = contrast.value; entry["auto"] = contrast.automatic; entry["enabled"] = contrast.enabled
+            lighting["contrast"] = entry
+        }
         modules["lighting"] = lighting
+        var effects = try section(modules, "effects")
+        var tone = try section(effects, "toneSync")
+        tone["enabled"] = settings.toneSync > 0; tone["adjustment"] = settings.toneSync
+        effects["toneSync"] = tone; modules["effects"] = effects
         var color = try section(modules, "colorState")
         for (module, key, values) in [("hue", "colorHues", settings.colorBands.map { $0.hueOffset / 360 }),
             ("saturation", "colorSaturation", settings.colorBands.map(\.saturation)),
@@ -189,6 +239,63 @@ public enum ComposerPresetCodec {
         return Exported(settingsData: try data(root), metadataData: try data(metadata), stickersData: try data(["version": 1, "stickerList": []]),
             warnings: ["Partial Composer transfer: unmapped original fields are preserved when available; unsupported current effects are not translated. Decorations and backgrounds are excluded. Appearance may differ."])
     }
+    /// Repairs the previous importer only when the software value still equals
+    /// its incorrect conversion of the retained original. Other preset edits
+    /// remain untouched. Call for persisted imported presets before selection.
+    public static func migratingPhysicalLighting(settings: CameraSettings, archive: ComposerPresetArchive) throws -> CameraSettings {
+        let lighting = try section(try section(try object(archive.settingsData), "settings"), "lighting")
+        var result = settings
+        if result.composerExposure == nil,
+           let intent = try physicalAdjustment(lighting, module: "exposure", key: "exposure", neutral: 0),
+           result.exposure == (intent.requestsManualValue ? intent.value : 0) {
+            result.composerExposure = intent; result.exposure = 0
+        }
+        if result.composerWhiteBalance == nil,
+           let intent = try physicalAdjustment(lighting, module: "whiteBalance", key: "balance", neutral: 6500),
+           result.warmth == (intent.requestsManualValue ? intent.value - 6500 : 0) {
+            result.composerWhiteBalance = intent; result.warmth = 0
+        }
+        if result.composerSaturation == nil,
+           let intent = try physicalAdjustment(lighting, module: "saturation", key: "saturation", neutral: 0),
+           result.saturation == (intent.requestsManualValue ? 1 + intent.value / 10 : 1) {
+            result.composerSaturation = intent; result.saturation = 1
+        }
+        if result.composerContrast == nil, result.contrast == 1, lighting["contrast"] != nil {
+            let entry = try section(lighting, "contrast")
+            result.composerContrast = .init(value: try number(entry, "contrast") ?? 0,
+                automatic: try flag(entry, "auto") ?? false, enabled: try flag(entry, "enabled") ?? true)
+        }
+        return result.sanitized
+    }
+
+    /// Native displayed aperture from a Composer radius, not a Gaussian-radius conversion.
+    public static func aperture(forBokehRadius radius: Double) -> Double {
+        floor((16.1 - abs(radius)) / 2.8 * 10) / 10
+    }
+
+    /// Explicitly restores newly mapped effects from an original archive. This
+    /// is for a user's restore/re-import action, never an unconditional launch migration.
+    public static func restoringMappedEffects(settings: CameraSettings, archive: ComposerPresetArchive) throws -> CameraSettings {
+        let modules = try section(try object(archive.settingsData), "settings")
+        let effects = try section(modules, "effects")
+        let tone = try section(effects, "toneSync")
+        let bokeh = try section(modules, "bokeh")
+        var result = settings
+        if let enabled = try flag(bokeh, "enabled") { result.blurEnabled = enabled }
+        if let radius = try number(bokeh, "bokeh") { result.composerBokehRadius = radius }
+        if try flag(tone, "enabled") == false { result.toneSync = 0 }
+        else if let amount = try number(tone, "adjustment") { result.toneSync = amount }
+        return result.sanitized
+    }
+
+    private static func physicalAdjustment(_ lighting: [String: Any], module: String, key: String, neutral: Double) throws -> ComposerPhysicalAdjustment? {
+        guard lighting[module] != nil else { return nil }
+        let entry = try section(lighting, module)
+        return ComposerPhysicalAdjustment(value: try number(entry, key) ?? neutral,
+                                          automatic: try flag(entry, "auto") ?? false,
+                                          enabled: try flag(entry, "enabled") ?? true)
+    }
+
     private static func object(_ data: Data) throws -> [String: Any] {
         guard data.count <= maximumDocumentBytes else { throw Invalid.document("Preset settings exceed the 2 MB limit.") }
         guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Invalid.document("Preset settings must be a JSON object.") }

@@ -58,9 +58,13 @@ final class StudioModel: ObservableObject {
     private var subscriptions = Set<AnyCancellable>()
     private let defaults = UserDefaults.standard
     private var captureActivity: NSObjectProtocol?
+    private var stockConnectionWork: DispatchWorkItem?
+    private var lastRequestedExposure: String?
+    private var lastRequestedSaturation: String?
     private var lastRequestedFocus: String?
     private var lastRequestedWhiteBalance: String?
     init() {
+        if let selected = defaults.string(forKey: "selectedCameraID"), !selected.isEmpty { camera.selectedDeviceID = selected }
         automaticResolution = defaults.bool(forKey: "video.automaticResolution")
         pauseWhenNotStreaming = defaults.bool(forKey: "video.pauseWhenNotStreaming")
         if let data = defaults.data(forKey: "presets"), let saved = try? JSONDecoder().decode([StudioPreset].self, from: data) { presets = saved }
@@ -70,6 +74,35 @@ final class StudioModel: ObservableObject {
         }
         if let value = defaults.string(forKey: "selectedPreset"), let id = UUID(uuidString: value), presets.contains(where: { $0.id == id }) { selectedPreset = id }
         if let data = defaults.data(forKey: "cameraSettings"), let settings = try? JSONDecoder().decode(CameraSettings.self, from: data) { camera.settings = settings }
+        // Repair the previous importer’s physical→digital mapping once, from
+        // retained original data, without overwriting subsequent user edits.
+        for index in presets.indices {
+            if let archive = presets[index].composerArchive,
+               let corrected = try? ComposerPresetCodec.migratingPhysicalLighting(settings: presets[index].settings, archive: archive) {
+                presets[index].settings = corrected
+            }
+        }
+        if let archive = presets.first(where: { $0.id == selectedPreset })?.composerArchive,
+           let corrected = try? ComposerPresetCodec.migratingPhysicalLighting(settings: camera.settings, archive: archive) {
+            camera.settings = corrected
+        }
+        // The user requested restoring the imported Composer look. Keep a local
+        // backup and fill the effect fields the old importer skipped, once per
+        // original archive; later user adjustments are not reapplied on launch.
+        for index in presets.indices {
+            let key = "composer.effectRestore.v1.\(presets[index].id.uuidString)"
+            guard !defaults.bool(forKey: key), let archive = presets[index].composerArchive,
+                  let restored = try? ComposerPresetCodec.restoringMappedEffects(settings: presets[index].settings, archive: archive) else { continue }
+            defaults.set(try? JSONEncoder().encode(presets[index]), forKey: key + ".backup")
+            presets[index].settings = restored
+            if presets[index].id == selectedPreset,
+               let current = try? ComposerPresetCodec.restoringMappedEffects(settings: camera.settings, archive: archive) {
+                defaults.set(try? JSONEncoder().encode(camera.settings), forKey: key + ".currentBackup")
+                camera.settings = current
+            }
+            defaults.set(true, forKey: key)
+        }
+        defaults.set(try? JSONEncoder().encode(presets), forKey: "presets")
         camera.$settings.debounce(for: .milliseconds(400), scheduler: RunLoop.main).sink { [weak self] value in
             self?.defaults.set(try? JSONEncoder().encode(value), forKey: "cameraSettings")
         }.store(in: &subscriptions)
@@ -137,7 +170,8 @@ final class StudioModel: ObservableObject {
             self.camera.setHardwareWhiteBalanceApplied(!automatic)
             if !automatic, self.camera.settings.lightingEnabled {
                 var settings = self.camera.settings
-                settings.warmth = kelvin - 6500
+                settings.composerWhiteBalance = .init(value: kelvin, automatic: false, enabled: true)
+                settings.warmth = 0
                 settings.manualLightingFields.insert("warmth")
                 if settings != self.camera.settings { self.camera.settings = settings }
             }
@@ -149,9 +183,21 @@ final class StudioModel: ObservableObject {
             self.lastRequestedWhiteBalance = nil
             self.applyStockWhiteBalanceSettings()
         }.store(in: &subscriptions)
+        stockFocus.$exposureAvailable.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] available in
+            guard let self, available else { return }
+            self.lastRequestedExposure = nil
+            self.applyStockExposureSettings()
+        }.store(in: &subscriptions)
+        stockFocus.$saturationAvailable.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] available in
+            guard let self, available else { return }
+            self.lastRequestedSaturation = nil
+            self.applyStockSaturationSettings()
+        }.store(in: &subscriptions)
         camera.$settings.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in
             self?.applyStockFocusSettings()
             self?.applyStockWhiteBalanceSettings()
+            self?.applyStockExposureSettings()
+            self?.applyStockSaturationSettings()
         }.store(in: &subscriptions)
         camera.onFrame = { [weak self] frame, time in
             guard let self else { return }
@@ -178,21 +224,29 @@ final class StudioModel: ObservableObject {
     var cameraBusy: Bool { c1.isConnecting || c1.isClosing }
     private func refreshStockFocusConnection() {
         let selectedID = camera.selectedDeviceID
-        let isStockC1 = !useC1Hardware && camera.devices.first(where: { $0.id == selectedID })?.name == "Opal C1"
-        camera.setExternalFocusManagement(isStockC1)
-        camera.setExternalWhiteBalanceManagement(isStockC1 && stockFocus.whiteBalanceAvailable)
-        guard camera.isRunning, isStockC1 else {
+        guard camera.isRunning, !useC1Hardware,
+              camera.devices.contains(where: { $0.id == selectedID && $0.name == "Opal C1" }) else {
+            stockConnectionWork?.cancel(); stockConnectionWork = nil
             stockFocus.disconnect()
-            lastRequestedFocus = nil; lastRequestedWhiteBalance = nil
+            lastRequestedFocus = nil; lastRequestedWhiteBalance = nil; lastRequestedExposure = nil; lastRequestedSaturation = nil
             camera.setHardwareWhiteBalanceApplied(false)
             return
         }
-        stockFocus.listDevices { [weak self] devices in
-            guard let self, self.camera.isRunning, !self.useC1Hardware, self.camera.selectedDeviceID == selectedID else { return }
-            // No first-device fallback when several physical C1s are attached.
-            guard devices.count == 1, let device = devices.first else { self.stockFocus.disconnect(); return }
-            self.stockFocus.connect(serial: device.id)
+        guard !stockFocus.isAvailable, !stockFocus.isConnecting, stockConnectionWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.stockConnectionWork = nil
+            guard self.camera.isRunning, self.cameraRequested, self.camera.selectedDeviceID == selectedID else { return }
+            guard self.camera.preview != nil else { self.refreshStockFocusConnection(); return }
+            self.stockFocus.listDevices { [weak self] devices in
+                guard let self, self.camera.isRunning, self.cameraRequested, !self.useC1Hardware,
+                      self.camera.selectedDeviceID == selectedID else { return }
+                guard devices.count == 1, let device = devices.first else { self.stockFocus.disconnect(); return }
+                self.stockFocus.connect(serial: device.id)
+            }
         }
+        stockConnectionWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
     private func applyStockFocusSettings() {
         guard stockFocus.isAvailable, !useC1Hardware else { return }
@@ -220,13 +274,32 @@ final class StudioModel: ObservableObject {
     private func applyStockWhiteBalanceSettings() {
         guard stockFocus.isAvailable, stockFocus.whiteBalanceAvailable, !useC1Hardware else { return }
         let settings = camera.settings
-        let manual = settings.lightingEnabled && (settings.manualLightingFields.contains("warmth") || settings.warmth != 0)
-        let kelvin = Int((6500 + settings.warmth).rounded(.towardZero))
+        let adjustment = settings.composerWhiteBalance
+        let manual = settings.lightingEnabled && adjustment?.requestsManualValue == true
+        let kelvin = Int((adjustment?.value ?? 6500).rounded(.towardZero))
         let request = "\(stockFocus.serial):\(manual):\(manual ? kelvin : 0)"
         guard request != lastRequestedWhiteBalance else { return }
         lastRequestedWhiteBalance = request
         if manual { stockFocus.setWhiteBalance(Double(kelvin)) }
         else { stockFocus.setAutomaticWhiteBalance(true) }
+    }
+    private func applyStockExposureSettings() {
+        guard stockFocus.isAvailable, stockFocus.exposureAvailable, !useC1Hardware else { return }
+        let adjustment = camera.settings.composerExposure
+        let value = camera.settings.lightingEnabled && adjustment?.requestsManualValue == true ? (adjustment?.value ?? 0) : 0
+        let request = "\(stockFocus.serial):\(value)"
+        guard request != lastRequestedExposure else { return }
+        lastRequestedExposure = request
+        stockFocus.setExposure(value)
+    }
+    private func applyStockSaturationSettings() {
+        guard stockFocus.isAvailable, stockFocus.saturationAvailable, !useC1Hardware else { return }
+        let adjustment = camera.settings.composerSaturation
+        let value = camera.settings.lightingEnabled && adjustment?.requestsManualValue == true ? (adjustment?.value ?? 0) : 0
+        let request = "\(stockFocus.serial):\(value)"
+        guard request != lastRequestedSaturation else { return }
+        lastRequestedSaturation = request
+        stockFocus.setSaturation(value)
     }
     func setPreviewVisible(_ visible: Bool) {
         previewVisible = visible
@@ -311,6 +384,7 @@ final class StudioModel: ObservableObject {
     }
     func stopCamera(completion: @escaping () -> Void = {}) {
         cameraRequested = false; startupRetry = nil
+        stockConnectionWork?.cancel(); stockConnectionWork = nil
         capturePausedForDemand = false
         if recording && recordingMode != .screen { toggleRecording() }; loop.stop(); previewRenderer.clear(); presetPreview.clear(); bridge.disconnect()
         stockFocus.disconnect { [self] in
@@ -335,6 +409,7 @@ final class StudioModel: ObservableObject {
         stopCamera { [weak self] in
             guard let self else { return }
             self.loop.clear(); self.useC1Hardware = false; self.camera.selectedDeviceID = device.id
+            self.defaults.set(device.id, forKey: "selectedCameraID")
             if running { self.startCamera() }
         }
     }

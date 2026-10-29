@@ -54,3 +54,34 @@ Production code retains no camera imagery or calibration data beyond the active 
 ## Validation
 
 `swift test` passed 25 core and7 bridge tests after this implementation; log `swift-tests.log`. Six new skin tests exercise actual Core Image renders, not only helper arithmetic. Tests cover curve endpoints/monotonicity, YIQ coefficients, shader guide/detail equations, skin selection, calibration, tone transform, person/background isolation, zero amount, alpha, and saved settings migration. Synthetic tests do not establish real-face perceptual parity or sustained meeting-client reliability.
+
+
+## Bokeh and preset fidelity follow-up
+
+The imported original Opal Color Edits archive contains Bokeh enabled/radius11 and Tone Sync enabled/adjustment0.5. It has no focus/autofocus/distance fields; focus cannot be recovered from this archive.
+
+Main0x100186c60 passes Tone Sync adjustment unchanged to the service. Main0x100186d0c displays `abs(adjustment)*200` percent. Codec now imports0.5 as0.5; UI displays100%. The existing skin processor correctly uses `inputStrength=2*amount`. `restoringMappedEffects` is an explicit restore helper, not a launch migration that might erase an intentional zero.
+
+Main0x100089e98 computes Bokeh label as `floor(((16.1-abs(radius))/2.8)*10)/10`; raw11 is f1.8, raw0 f5.7, raw8.48 f2.7. This only labels native-radius settings; legacy Gaussian radius is not relabeled as an equivalent physical value.
+
+### Reconstructed Bokeh pipeline
+
+Native main0x100088e74 sends raw radius unchanged. XPC0x10001e7e4 stores it in wrapper offset36. Wrapper0x100010cdc multiplies radius by the startup fade factor (default1), then passes it to MTIBokehFilter offset40. That filter is custom directional bokeh, not CIGaussianBlur. No arbitrary Gaussian-strength conversion is used for imported native radii.
+
+- Native wrapper defaults at0x10018daf0: strength1, radius7.6, brightness0.5. Brightness is clamped−1…1 and power=`10^brightness` (0x100058e48). The stable full-strength default thus uses power=sqrt(10).
+- Native three directions use angle0 plus120°,240°,360°, with offsets `(sin(angle)*radius/width, cos(angle)*radius/height)` (0x100058bb8…58d44). Fixed16-tap kernels operate along each direction, so radius is in processing-image pixels. No output-resolution multiplier was added.
+- Prepass AIR module118829 raises RGB to power, storing `1-personMask` in alpha (an internal data channel).
+- Alpha1 module123581 computes a16-tap weighted directional average. Samples use deterministic jitter `fract(sin(dot(normalizedPosition, normalizedDelta*mask))*43758.546875)` and spacing `delta*mask/16`. For each group of4samples, weights are respectively the RGBA components of that group's fourth sample. Sumweight<0.01 returns centerRGB. This unusual color-dependent weighting is in the shipped AIR and is retained.
+- Alpha2 module129357 computes the sum of two such averages (direction0 anddirection1) from the same prepass. Both intermediate outputs retain the center mask in alpha.
+- Final module136333 samples Alpha1 alongdirection1 and Alpha2 alongdirection2, sums/divides by3, raises to reciprocalpower, outputsalpha1. Native pass ordering/arguments are retained in `bokeh-pipeline-disassembly.txt`.
+- Independent implementation `ComposerBokeh.swift` uses system Core Image kernels and GPU intermediate barriers with Core Image's default half-float precision to bound GPU work instead of expanding each chained sample through earlier passes. It reconstructs equations; it does not load vendor shaders or link vendor binaries.
+- `composerBokehRadius` is optional so old saved Gaussian settings retain prior behavior. Explicit preset import restores native radius; moving Bokeh now controls native0…11 radius and exact aperture label.
+
+Validation: independent scalar reference at selected pixels agrees within4/255; uniform colors remain stable, foreground mask blocks blur, zero radius is byte-identical, background blurs and outputalpha stays255. Initial CGImage-materialized passes cost15.3–16.7ms at720p. Replacing those with `CIImage.insertingIntermediate(cache:false)` reduced the same warm pipeline plus final render to3.85–5.08ms and all scalar/color/opacity tests still passed. This excludes Vision and other effects. The native intermediate pixel format0x73 is RGBA16Float and final0x50 is BGRA8Unorm; Core Image's documented default working formatRGBAh matches the intermediate precision. This cost must be assessed with the full live pipeline. Native comparison remains limited by different segmentation models, intermediate numeric precision, camera colorimetry and layer ordering. These tests do not establish exact original pixels.
+
+
+### Apple-GPU mask correction
+
+The earlier blanket statement that Composer always uses GoogleMeets is incorrect. Its frame pipeline selects AppleVision when the GPU name contains Apple, and GoogleMeets on non-Apple GPUs. See `../segmentation/README.md` for exact native branch references. Build14 uses fresh balanced VNGeneratePersonSegmentationRequest instances, a persistent VNSequenceRequestHandler,16-bit half-float masks, linear resize, and native white-mask warmup/failure behavior. It removes the earlier additional temporal dissolve,8-bit mask materialization, and Gaussian1.2 edge feathering on Apple GPUs. Non-Apple Studio retains its prior Vision path and is not claimed to match Composer's GoogleMeets+refinement branch.
+
+The app now backs up existing imported settings and restores the previously skipped Bokeh/ToneSync fields once per imported archive, as requested by the user. Subsequent launches do not overwrite edits. This app integration is distinct from the explicit codec restore helper described above.

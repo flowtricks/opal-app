@@ -20,6 +20,26 @@ final class StockC1FocusController: ObservableObject {
     @Published private(set) var automaticWhiteBalance = true
     @Published private(set) var whiteBalanceRange = 2000.0...10000.0
     @Published private(set) var whiteBalanceError: String?
+    @Published private(set) var whiteBalanceTemperatureValid = false
+    @Published private(set) var requestedWhiteBalanceKelvin: Double?
+    @Published private(set) var exposureAvailable = false
+    @Published private(set) var exposureValue = 0.0
+    @Published private(set) var exposureRegisterValue = 0
+    @Published private(set) var exposureRegisterRange = 0...0
+    @Published private(set) var exposureError: String?
+    var onExposureApplied: ((Double) -> Void)?
+    private var latestExposure: Int32?
+    private var exposureInFlight = false
+    private var exposureRequestID = 0
+    @Published private(set) var saturationAvailable = false
+    @Published private(set) var saturationValue = 0.0
+    @Published private(set) var saturationRegisterValue = 0
+    @Published private(set) var saturationRegisterRange = 0...0
+    @Published private(set) var saturationError: String?
+    var onSaturationApplied: ((Double) -> Void)?
+    private var latestSaturation: Int32?
+    private var saturationInFlight = false
+    private var saturationRequestID = 0
     private var latestWhiteBalance: Int32?
     private var whiteBalanceInFlight = false
     var onFocusApplied: ((Double, Bool) -> Void)?
@@ -77,6 +97,9 @@ final class StockC1FocusController: ObservableObject {
         let token = generation
         pendingChange?.cancel(); latestPosition = nil; positionInFlight = false
         latestWhiteBalance = nil; whiteBalanceInFlight = false; whiteBalanceAvailable = false
+        latestExposure = nil; exposureInFlight = false; exposureAvailable = false; exposureError = nil
+        latestSaturation = nil; saturationInFlight = false; saturationAvailable = false; saturationError = nil
+        whiteBalanceTemperatureValid = false; requestedWhiteBalanceKelvin = nil
         self.serial = serial
         isAvailable = false; isConnecting = true; error = nil
         worker.open(serial: serial) { [weak self] state, error in
@@ -85,10 +108,11 @@ final class StockC1FocusController: ObservableObject {
             self.error = error
             if let state {
                 self.accept(state); self.isAvailable = true
-                // This stock C1 advertises temperature but stalls its GET_CUR.
-                // Do not repeat that unsupported optional request on every USB
-                // arrival; software temperature remains active. A dedicated
-                // diagnostic can explicitly call refreshWhiteBalance().
+                // Inspect only. These calls never change auto modes or apply
+                // saved slider values; the model decides what to request.
+                self.refreshWhiteBalance()
+                self.refreshExposure()
+                self.refreshSaturation()
             }
         }
     }
@@ -160,8 +184,8 @@ final class StockC1FocusController: ObservableObject {
         worker.readWhiteBalance { [weak self] state, error in
             guard let self, token == self.generation else { return }
             self.whiteBalanceError = error
-            self.whiteBalanceAvailable = state.map { ($0.temperature_info & 3) == 3 && ($0.automatic_info & 3) == 3 && ($0.automatic_info & 4) == 0 } ?? false
             if let state { self.acceptWhiteBalance(state) }
+            self.whiteBalanceAvailable = state.map { ($0.temperature_info & 3) == 3 && ($0.temperature_info & 0x20) == 0 && ($0.automatic_info & 1) != 0 && ($0.automatic_info & 0x24) == 0 } ?? false
         }
     }
 
@@ -182,7 +206,7 @@ final class StockC1FocusController: ObservableObject {
             self.whiteBalanceError = error
             if let state {
                 self.acceptWhiteBalance(state)
-                if requestID == self.whiteBalanceRequestID { self.onWhiteBalanceApplied?(Double(state.temperature), state.automatic != 0) }
+                if requestID == self.whiteBalanceRequestID { self.onWhiteBalanceApplied?(self.whiteBalanceKelvin, state.automatic != 0) }
             }
             self.submitLatestWhiteBalance()
         }
@@ -198,14 +222,96 @@ final class StockC1FocusController: ObservableObject {
             self.whiteBalanceError = error
             if let state {
                 self.acceptWhiteBalance(state)
-                if requestID == self.whiteBalanceRequestID { self.onWhiteBalanceApplied?(Double(state.temperature), state.automatic != 0) }
+                if requestID == self.whiteBalanceRequestID { self.onWhiteBalanceApplied?(self.whiteBalanceKelvin, state.automatic != 0) }
             }
         }
     }
     private func acceptWhiteBalance(_ state: StockC1WhiteBalanceState) {
-        whiteBalanceKelvin = Double(state.temperature)
+        whiteBalanceTemperatureValid = state.temperature_valid != 0
+        if whiteBalanceTemperatureValid { whiteBalanceKelvin = Double(state.temperature) }
+        requestedWhiteBalanceKelvin = state.requested_temperature > 0 ? Double(state.requested_temperature) : nil
         automaticWhiteBalance = state.automatic != 0
         whiteBalanceRange = Double(state.minimum)...Double(state.maximum)
+    }
+
+    func refreshExposure() {
+        guard isAvailable else { return }
+        let token = generation
+        worker.readExposure { [weak self] state, error in
+            guard let self, token == self.generation else { return }
+            self.exposureError = error
+            if let state { self.acceptExposure(state) }
+            self.exposureAvailable = state.map { ($0.info & 3) == 3 && ($0.info & 0x24) == 0 } ?? false
+        }
+    }
+
+    func setExposure(_ raw: Double) {
+        guard isAvailable, exposureAvailable, raw.isFinite,
+              raw >= Double(Int32.min), raw <= Double(Int32.max) else { return }
+        exposureRequestID &+= 1
+        latestExposure = Int32(raw.rounded(.towardZero))
+        submitLatestExposure()
+    }
+
+    private func submitLatestExposure() {
+        guard isAvailable, exposureAvailable, !exposureInFlight, let value = latestExposure else { return }
+        latestExposure = nil; exposureInFlight = true
+        let token = generation; let requestID = exposureRequestID
+        worker.setExposure(value) { [weak self] state, error in
+            guard let self, token == self.generation else { return }
+            self.exposureInFlight = false; self.exposureError = error
+            if let state {
+                self.acceptExposure(state)
+                if requestID == self.exposureRequestID { self.onExposureApplied?(self.exposureValue) }
+            }
+            self.submitLatestExposure()
+        }
+    }
+
+    private func acceptExposure(_ state: StockC1ExposureState) {
+        exposureValue = Double(state.composer_value)
+        exposureRegisterValue = Int(state.value)
+        exposureRegisterRange = Int(state.minimum)...Int(state.maximum)
+    }
+
+    func refreshSaturation() {
+        guard isAvailable else { return }
+        let token = generation
+        worker.readSaturation { [weak self] state, error in
+            guard let self, token == self.generation else { return }
+            self.saturationError = error
+            if let state { self.acceptSaturation(state) }
+            self.saturationAvailable = state.map { ($0.info & 3) == 3 && ($0.info & 0x24) == 0 } ?? false
+        }
+    }
+
+    func setSaturation(_ raw: Double) {
+        guard isAvailable, saturationAvailable, raw.isFinite,
+              raw >= Double(Int32.min), raw <= Double(Int32.max) else { return }
+        saturationRequestID &+= 1
+        latestSaturation = Int32(raw.rounded(.towardZero))
+        submitLatestSaturation()
+    }
+
+    private func submitLatestSaturation() {
+        guard isAvailable, saturationAvailable, !saturationInFlight, let value = latestSaturation else { return }
+        latestSaturation = nil; saturationInFlight = true
+        let token = generation; let requestID = saturationRequestID
+        worker.setSaturation(value) { [weak self] state, error in
+            guard let self, token == self.generation else { return }
+            self.saturationInFlight = false; self.saturationError = error
+            if let state {
+                self.acceptSaturation(state)
+                if requestID == self.saturationRequestID { self.onSaturationApplied?(self.saturationValue) }
+            }
+            self.submitLatestSaturation()
+        }
+    }
+
+    private func acceptSaturation(_ state: StockC1SaturationState) {
+        saturationValue = Double(state.composer_value)
+        saturationRegisterValue = Int(state.value)
+        saturationRegisterRange = Int(state.minimum)...Int(state.maximum)
     }
 
     func disconnect(completion: @escaping () -> Void = {}) {
@@ -214,6 +320,9 @@ final class StockC1FocusController: ObservableObject {
         latestPosition = nil; positionInFlight = false
         latestWhiteBalance = nil; whiteBalanceInFlight = false
         whiteBalanceAvailable = false; whiteBalanceError = nil
+        whiteBalanceTemperatureValid = false; requestedWhiteBalanceKelvin = nil
+        latestExposure = nil; exposureInFlight = false; exposureAvailable = false; exposureError = nil
+        latestSaturation = nil; saturationInFlight = false; saturationAvailable = false; saturationError = nil
         serial = ""; isAvailable = false; isConnecting = false; error = nil
         worker.close(completion: completion)
     }
@@ -228,6 +337,8 @@ final class StockC1FocusController: ObservableObject {
 private final class StockC1FocusWorker {
     typealias Completion = (StockC1FocusState?, String?) -> Void
     typealias WhiteBalanceCompletion = (StockC1WhiteBalanceState?, String?) -> Void
+    typealias ExposureCompletion = (StockC1ExposureState?, String?) -> Void
+    typealias SaturationCompletion = (StockC1SaturationState?, String?) -> Void
     private let queue = DispatchQueue(label: "com.timothyricks.opal.stock-c1-focus", qos: .userInitiated)
     // Access only on queue. Every operation retains the worker until finished.
     private var handle: OpaquePointer?
@@ -287,6 +398,42 @@ private final class StockC1FocusWorker {
     }
     func setAutomaticWhiteBalance(_ enabled: Bool, completion: @escaping WhiteBalanceCompletion) {
         performWhiteBalance(completion) { stock_c1_set_auto_white_balance($0, enabled ? 1 : 0, $1, $2, $3) }
+    }
+    func readExposure(completion: @escaping ExposureCompletion) {
+        performExposure(completion) { stock_c1_read_exposure($0, $1, $2, $3) }
+    }
+    func setExposure(_ value: Int32, completion: @escaping ExposureCompletion) {
+        performExposure(completion) { stock_c1_set_exposure($0, value, $1, $2, $3) }
+    }
+    private func performExposure(_ completion: @escaping ExposureCompletion, operation: @escaping (OpaquePointer?, UnsafeMutablePointer<StockC1ExposureState>, UnsafeMutablePointer<CChar>, Int) -> Int32) {
+        let token = currentEpoch()
+        queue.async {
+            guard self.isCurrent(token) else { return }
+            var state = StockC1ExposureState()
+            var error = [CChar](repeating: 0, count: 512)
+            let okay = operation(self.handle, &state, &error, error.count) != 0
+            let value = okay ? state : nil
+            let message = okay ? nil : String(cString: error)
+            DispatchQueue.main.async { completion(value, message) }
+        }
+    }
+    func readSaturation(completion: @escaping SaturationCompletion) {
+        performSaturation(completion) { stock_c1_read_saturation($0, $1, $2, $3) }
+    }
+    func setSaturation(_ value: Int32, completion: @escaping SaturationCompletion) {
+        performSaturation(completion) { stock_c1_set_saturation($0, value, $1, $2, $3) }
+    }
+    private func performSaturation(_ completion: @escaping SaturationCompletion, operation: @escaping (OpaquePointer?, UnsafeMutablePointer<StockC1SaturationState>, UnsafeMutablePointer<CChar>, Int) -> Int32) {
+        let token = currentEpoch()
+        queue.async {
+            guard self.isCurrent(token) else { return }
+            var state = StockC1SaturationState()
+            var error = [CChar](repeating: 0, count: 512)
+            let okay = operation(self.handle, &state, &error, error.count) != 0
+            let value = okay ? state : nil
+            let message = okay ? nil : String(cString: error)
+            DispatchQueue.main.async { completion(value, message) }
+        }
     }
     private func performWhiteBalance(_ completion: @escaping WhiteBalanceCompletion, operation: @escaping (OpaquePointer?, UnsafeMutablePointer<StockC1WhiteBalanceState>, UnsafeMutablePointer<CChar>, Int) -> Int32) {
         let token = currentEpoch()

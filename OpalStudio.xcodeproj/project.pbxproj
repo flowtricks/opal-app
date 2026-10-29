@@ -825,6 +825,24 @@
 			<key>fileRef</key>
 			<string>830CDC99913789E2CAE600DB</string>
 		</dict>
+		<key>C9131A4746738A2EEC383A99</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>path</key>
+			<string>Resources/ComposerC1Endloop.mp4</string>
+			<key>sourceTree</key>
+			<string>SOURCE_ROOT</string>
+			<key>lastKnownFileType</key>
+			<string>video.mpeg4</string>
+		</dict>
+		<key>55102C12A3F5C52B839FB0F3</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>C9131A4746738A2EEC383A99</string>
+		</dict>
 		<key>49EC5C101885ACE2DB9DC05A</key>
 		<dict>
 			<key>isa</key>
@@ -842,6 +860,24 @@
 			<string>PBXBuildFile</string>
 			<key>fileRef</key>
 			<string>49EC5C101885ACE2DB9DC05A</string>
+		</dict>
+		<key>768F7A281413CEF75EA6F1E1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>path</key>
+			<string>Resources/ComposerC1Twist.mp4</string>
+			<key>sourceTree</key>
+			<string>SOURCE_ROOT</string>
+			<key>lastKnownFileType</key>
+			<string>video.mpeg4</string>
+		</dict>
+		<key>EF4EB3B614FC9C2C3A5F52DB</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>768F7A281413CEF75EA6F1E1</string>
 		</dict>
 		<key>BB6944172132909003185894</key>
 		<dict>
@@ -945,7 +981,9 @@
 			<array>
 				<string>40ADCBC7BD01C5594CC999D9</string>
 				<string>830CDC99913789E2CAE600DB</string>
+				<string>C9131A4746738A2EEC383A99</string>
 				<string>49EC5C101885ACE2DB9DC05A</string>
+				<string>768F7A281413CEF75EA6F1E1</string>
 				<string>BB6944172132909003185894</string>
 				<string>68539FB383FE6B9E2F72E634</string>
 				<string>39A0F3B0763D7AA8C7B3CE8B</string>
@@ -963,7 +1001,9 @@
 			<array>
 				<string>E0AB23EA4738633D8A0586CF</string>
 				<string>B5AB978F6902B93EF907AAEF</string>
+				<string>55102C12A3F5C52B839FB0F3</string>
 				<string>FB37224CB5305F9D91C1C3D2</string>
+				<string>EF4EB3B614FC9C2C3A5F52DB</string>
 				<string>CCA7452D5B778DF08AE2AA77</string>
 				<string>681883F6DE6D2731F8E9B60A</string>
 				<string>E99D5C5EEC4B644A0D6A442F</string>
@@ -1244,7 +1284,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string>DEBUG</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>12</string>
+				<string>14</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1307,7 +1347,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string></string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>12</string>
+				<string>14</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1408,7 +1448,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string>DEBUG</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>12</string>
+				<string>14</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1471,7 +1511,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string></string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>12</string>
+				<string>14</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1585,7 +1625,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string>DEBUG</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>12</string>
+				<string>14</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1650,7 +1690,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string></string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>12</string>
+				<string>14</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>

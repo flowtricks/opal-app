@@ -51,3 +51,18 @@ A live1080p stock-C1 run with Bokeh enabled reported2045captured/processed frame
 Live camera-only recording through the rebuilt Record window successfully saved and decoded87frames at1920×1080 over2.907seconds, with0non-monotonic timestamps. Audio was off for that check; no microphone/screen capture claim follows. The disposable test clip was removed after validation; the text log is `build/live-recording-check.log`.
 
 The latest direct C1 test failed at the SDK-managed RAM handoff with `X_LINK_DEVICE_NOT_FOUND`. Stock USB identity returned automatically (Opal C1, product0xf63d); no flash write or further physical reconnect was needed. The installed app was restored to stock capture,1080p and its pre-test effect values. Physical focus and direct sensor-control parity remain unresolved.
+
+## Notarized universal build 11 — 2026-10-29
+
+The app, camera extension and camera-arrival helper were archived for `arm64` and `x86_64`, signed with Developer ID Application for team G766RX9X84, submitted through Xcode, and exported after Apple's notarization completed. `stapler validate`, strict deep code-signature verification, and Gatekeeper assessment all passed. The ZIP was extracted into a separate directory and those checks passed again. The signing profile uses `ProvisionsAllDevices`; installation is not limited to registered development Macs. Intel runtime behavior has not been exercised on this Apple Silicon host.
+
+Installed build 11 restored live C1 capture. Its enabled focus-distance slider physically changed focus at the 0.1 m and 2.0 m endpoints without restarting capture; Auto was restored afterward. Temperature hardware probing returned STALL for entity3/interface1/selector0x0a/GET_CUR/length2, so the application correctly retained software temperature correction. This is not a verified hardware-white-balance implementation on this unit.
+
+At a local 720p loopback checkpoint, capture/processing/output counts were all 2,789, with zero capture drops, processing failures, recovery attempts, interruptions, or repeated frames. The independent virtual-camera consumer had received 2,115 frames with zero invalid timestamps, alpha-fault frames or unexpected dimensions; 265 full alpha scans, largest observed delivery gap 46.8 ms. The snapshot reported 12.7 ms input-to-processed time and 1.8 ms processed-to-output; these are pipeline measurements, not glass-to-glass latency. The consumer test was stopped after this check. This does not establish sustained Meet/Zoom behavior.
+
+During the earlier interrupted-camera reports, IORegistry identified the C1 as Luxonis Bootloader and both original Composer and Studio were running. Original Composer's plug-in-startup setting was visibly enabled; it was turned off through Composer's General settings, then Composer was quit. After a physical power cycle the camera returned to stock Opal C1 and stayed there during build11 verification. This establishes the observed recovery and launch conflict, not the exact cause of the camera entering bootloader mode.
+
+After replacing the Apple Development build with Developer ID signing, the first helper registration hit a macOS launch-constraint cache rejection. Unregistering that one helper and registering it again through Studio's General settings resolved it: launchctl reported parent build11, running, PID65144; its log confirmed it was watching C1 arrivals. Login registration was similarly refreshed. No global BTM reset, security bypass or reboot was performed. Final physical replug validation is recorded separately when completed.
+
+Private release: https://github.com/flowtricks/opal-app/releases/tag/v0.1.0-build11
+ZIP SHA-256: `2e17e533624ea6159efdc42501f2287baf2e055fcf8888195419eb9a13b68b59`.

@@ -1,5 +1,7 @@
 # Feature parity and verification matrix
 
+**Historical matrix:** The build 16 implementation supersedes the older Gaussian, Vision-face and reconstructed-color entries below. Read [the current source and test audit](BUILD16_PARITY_AUDIT.md) first. Whole-app equality remains an acceptance question, not a claim inferred from individual shader tests.
+
 Snapshot: October 29, 2026. “Implemented” means the source/UI provides the behavior; “tested” identifies the specific local or synthetic test scope. Neither means pixel-identical Composer output or proven reliability in every meeting client. The user excludes decorations/stickers and replacement backgrounds, but requires background blur and the other relevant camera/effect features. The latest priority is reducing visible delay.
 
 Original-app evidence is indexed in [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md). Deep native/shader evidence and precise Touch Up/Tone Sync equations are in [effects/README.md](effects/README.md).

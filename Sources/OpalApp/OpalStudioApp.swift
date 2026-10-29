@@ -150,7 +150,7 @@ struct ComposerView: View {
                     }
                 } label: { badge(camera.settings.resolution == .uhd2160 ? "2160p" : camera.settings.resolution.title) }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
                 HStack(spacing: 4) {
-                    badge(String(format: "%.1fx", camera.settings.zoom))
+                    badge(String(format: "%.1fx", camera.settings.zoomDisplay))
                     badge(camera.settings.blurEnabled ? "ƒ \(aperture)" : "ƒ Off")
                     badge((studio.useC1Hardware ? c1.settings.manualFocus : camera.settings.focusLocked) ? "MF" : "AF")
                 }
@@ -267,9 +267,14 @@ struct ComposerView: View {
             }.buttonStyle(.plain).foregroundStyle(camera.settings.faceLockEnabled ? yellow : .white.opacity(0.65)).background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 4)).overlay(RoundedRectangle(cornerRadius: 4).stroke(line)).padding(.bottom, 11)
             VStack(spacing: 8) {
                 HStack { Text("Bokeh"); Spacer(); Text(camera.settings.blurEnabled ? "ƒ \(aperture)" : "Off") }
-                ComposerSlider(value: Binding(get: { camera.settings.blurEnabled ? (camera.settings.composerBokehRadius ?? camera.settings.blurRadius / 24 * 11) : 0 }, set: { camera.settings.blurEnabled = true; camera.settings.composerBokehRadius = $0 }), range: 0...11, label: "Bokeh")
+                ComposerSlider(value: Binding(get: { camera.settings.blurEnabled ? (camera.settings.composerBokehRadius ?? camera.settings.blurRadius / 24 * 11) : 0 }, set: { camera.settings.blurEnabled = true; camera.settings.composerBokehRadius = ($0 / 0.11).rounded() * 0.11 }), range: 0...11, label: "Bokeh")
             }
-            slider("Zoom", value: setting(\.zoom), range: 1...3, format: "%.1fx")
+            VStack(spacing: 8) {
+                HStack { Text("Zoom"); Spacer(); Text(String(format: "%.1fx", camera.settings.zoomDisplay)) }
+                ComposerSlider(value: Binding(get: { camera.settings.zoom }, set: {
+                    camera.settings.zoom = 1 + (($0 - 1) / 0.005625).rounded() * 0.005625
+                }), range: 1...1.5625, label: "Zoom")
+            }
             VStack(spacing: 8) {
                 HStack {
                     Text(!studio.useC1Hardware && camera.settings.focusLocked && stockFocus.isAvailable ? "Focus distance" : "Focus")
@@ -347,16 +352,17 @@ struct ComposerView: View {
     private var composerContrastControl: some View {
         let state = camera.settings.composerContrast
         let value = state?.value ?? 0
-        let manual = state.map { $0.enabled && !$0.automatic } ?? camera.settings.manualLightingFields.contains("contrast")
+        let manual = state.map { !$0.automatic } ?? camera.settings.manualLightingFields.contains("contrast")
         return VStack(spacing: 8) {
-            HStack { Text("Contrast"); Spacer(); if manual {
-                Text(String(format: "%.0f%%", abs(value) * 50))
-                manualButton {
-                    camera.settings.composerContrast = .init(value: value, automatic: true, enabled: false)
+            HStack { Text("Contrast"); Spacer()
+                if manual { Text(String(format: "%.0f%%", abs(value) * 50)) }
+                lightingMode(manual) { useManual in
+                    camera.settings.composerContrast = .init(value: value, automatic: !useManual, enabled: useManual)
                     camera.settings.contrast = 1
-                    camera.settings.manualLightingFields.remove("contrast")
+                    if useManual { camera.settings.manualLightingFields.insert("contrast") }
+                    else { camera.settings.manualLightingFields.remove("contrast") }
                 }
-            } }
+            }
             ComposerSlider(value: Binding(get: { value }, set: {
                 camera.settings.composerContrast = .init(value: ($0 / 0.02).rounded() * 0.02)
                 camera.settings.contrast = 1
@@ -366,12 +372,14 @@ struct ComposerView: View {
     }
     private func physicalAdjustment(_ title: String, key: WritableKeyPath<CameraSettings, ComposerPhysicalAdjustment?>, range: ClosedRange<Double>, neutral: Double, text: (Double) -> String, colors: [Color] = []) -> some View {
         let setting = camera.settings[keyPath: key]
-        let manual = setting?.requestsManualValue == true
+        let manual = setting.map { !$0.automatic } ?? false
         let value = setting?.value ?? neutral
         return VStack(spacing: 8) {
-            HStack { Text(title); Spacer(); if manual { Text(text(value)); manualButton {
-                camera.settings[keyPath: key] = .init(value: neutral, automatic: true, enabled: true)
-            } } }
+            HStack { Text(title); Spacer(); if manual { Text(text(value)) }
+                lightingMode(manual) { useManual in
+                    camera.settings[keyPath: key] = .init(value: value, automatic: !useManual, enabled: true)
+                }
+            }
             ComposerSlider(value: Binding(get: { value }, set: {
                 camera.settings[keyPath: key] = .init(value: title == "Temperature" ? ($0 / 50).rounded() * 50 : $0, automatic: false, enabled: true)
                 if title == "Temperature" { camera.settings.warmth = 0; camera.settings.whiteBalanceSampleRGB = nil }
@@ -382,11 +390,35 @@ struct ComposerView: View {
                 .help(title == "Temperature" ? (stockFocus.whiteBalanceError ?? "Opal C1 camera white balance") : (title == "Exposure" ? (stockFocus.exposureError ?? "Opal C1 camera exposure compensation") : (stockFocus.saturationError ?? "Opal C1 camera saturation")))
         }
     }
+    private func lightingMode(_ manual: Bool, change: @escaping (Bool) -> Void) -> some View {
+        Menu {
+            Button("Auto") { change(false) }
+            Button("Manual") { change(true) }
+        } label: { Text(manual ? "Manual" : "Auto").font(.system(size: 11, weight: .semibold)) }
+            .menuStyle(.borderlessButton).fixedSize().padding(.horizontal, 4).padding(.vertical, 2)
+            .background(Color(white: 0.22), in: RoundedRectangle(cornerRadius: 2))
+    }
     private func adjustment(_ title: String, key: WritableKeyPath<CameraSettings, Double>, name: String, range: ClosedRange<Double>, neutral: Double, text: (Double) -> String, colors: [Color] = []) -> some View {
-        let manual = camera.settings.manualLightingFields.contains(name) || camera.settings[keyPath: key] != neutral
+        let state = camera.settings.composerDigitalLighting[name]
+        let manual = state.map { !$0.automatic } ?? (camera.settings.manualLightingFields.contains(name) || camera.settings[keyPath: key] != neutral)
+        let value = state.map { $0.value + neutral } ?? camera.settings[keyPath: key]
         return VStack(spacing: 8) {
-            HStack { Text(title); Spacer(); if manual { Text(text(camera.settings[keyPath: key])); manualButton { camera.settings[keyPath: key] = neutral; camera.settings.manualLightingFields.remove(name); if name == "warmth" || name == "tint" { camera.settings.whiteBalanceSampleRGB = nil; camera.settings.lockWhiteBalance = false }; if name == "exposure" { camera.settings.lockExposure = false } } } }
-            ComposerSlider(value: Binding(get: { camera.settings[keyPath: key] }, set: { camera.settings[keyPath: key] = $0; camera.settings.manualLightingFields.insert(name) }), range: range, colors: manual ? colors : [], center: neutral, automatic: !manual, label: title)
+            HStack {
+                Text(title); Spacer()
+                if manual { Text(text(value)) }
+                lightingMode(manual) { useManual in
+                    camera.settings.composerDigitalLighting[name] = .init(value: value-neutral, automatic: !useManual, enabled: useManual)
+                    camera.settings[keyPath: key] = useManual ? value : neutral
+                    if useManual { camera.settings.manualLightingFields.insert(name) }
+                    else { camera.settings.manualLightingFields.remove(name) }
+                    if name == "tint" { camera.settings.whiteBalanceSampleRGB = nil }
+                }
+            }
+            ComposerSlider(value: Binding(get: { manual ? value : neutral }, set: {
+                camera.settings[keyPath: key] = $0
+                camera.settings.composerDigitalLighting[name] = .init(value: $0-neutral)
+                camera.settings.manualLightingFields.insert(name)
+            }), range: range, colors: manual ? colors : [], center: neutral, automatic: !manual, label: title)
         }
     }
     private let bandColors: [Color] = [Color(red: 1, green: 0, blue: 0), Color(red: 1, green: 0.5, blue: 0), Color(red: 1, green: 1, blue: 0), Color(red: 0, green: 1, blue: 0), Color(red: 0, green: 1, blue: 1), Color(red: 0, green: 0, blue: 1), Color(red: 0.5, green: 0, blue: 1), Color(red: 1, green: 0, blue: 1)]
@@ -412,11 +444,16 @@ struct ComposerView: View {
     private func scaledBand(_ key: WritableKeyPath<ColorBandAdjustment, Double>) -> Binding<Double> { Binding(get: { camera.settings.colorBands[selectedBand][keyPath: key] * 100 }, set: { camera.settings.colorBands[selectedBand][keyPath: key] = $0 / 100 }) }
     private var effects: some View {
         VStack(spacing: 14) {
-            slider("Touch up", value: Binding(get: { camera.settings.touchUp * 100 }, set: { camera.settings.touchUp = $0 / 100 }), range: 0...100, format: "%.0f%%")
+            slider("Touch up", value: Binding(get: { camera.settings.touchUp * 200 }, set: { camera.settings.touchUp = ($0.rounded()) / 200 }), range: 0...100, format: "%.0f%%")
             slider("Tone sync", value: Binding(get: { camera.settings.toneSync * 200 }, set: { camera.settings.toneSync = $0 / 200 }), range: 0...100, format: "%.0f%%")
             VStack(spacing: 8) {
-                HStack { Text("Pixelate"); Spacer(); Text(camera.settings.pixelate == 0 ? "Off" : String(format: "%.0f", camera.settings.pixelate)) }
-                ComposerSlider(value: setting(\.pixelate), range: 0...80, label: "Pixelate")
+                let level=camera.settings.composerPixelateLevel ?? ComposerPixelate.closestLevel(legacyScale:camera.settings.pixelate,height:camera.settings.resolution.height)
+                HStack { Text("Pixelate"); Spacer(); Text(level<0 ? "Off" : "\(1995-level*5)") }
+                ComposerSlider(value:Binding(get:{ Double(camera.settings.composerPixelateLevel ?? level) },set:{ camera.settings.composerPixelateLevel=Int($0.rounded()) }),range:-1...4,label:"Pixelate")
+                    .accessibilityAdjustableAction { direction in
+                        if direction == .increment { camera.settings.composerPixelateLevel=min(4,level+1) }
+                        if direction == .decrement { camera.settings.composerPixelateLevel=max(-1,level-1) }
+                    }
             }.font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
         }
     }
@@ -456,7 +493,7 @@ struct ComposerView: View {
             Button("Recalibrate skin tone") { camera.settings.toneSyncCalibrationRevision &+= 1 }
             slider("Mask smoothing", value: setting(\.maskSmoothing), range: 0...0.85, format: "%.2f")
             slider("Sharpness", value: setting(\.sharpness), range: 0...2, format: "%.2f")
-            Picker("Photo filter", selection: setting(\.photoFilter)) { Text("None").tag(nil as PhotoFilter?); ForEach(PhotoFilter.allCases, id: \.self) { Text($0.title).tag(Optional($0)) } }
+            Picker("Photo filter", selection: Binding(get: { camera.settings.photoFilter }, set: { camera.settings.photoFilter = $0; camera.settings.photoFiltersEnabled = true; camera.settings.composerUnknownFilter = nil })) { Text("None").tag(nil as PhotoFilter?); ForEach(PhotoFilter.allCases, id: \.self) { Text($0.title).tag(Optional($0)) } }
             if camera.settings.photoFilter != nil { slider("Filter intensity", value: setting(\.photoFilterIntensity), range: 0...1, format: "%.2f") }
             Divider()
             sensorControls

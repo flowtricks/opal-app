@@ -125,6 +125,11 @@ public enum ComposerPresetCodec {
             result.contrast = 1
             applied.append("lighting.contrast.clahe")
         }
+        for module in ["tint", "vibrance", "highlights", "shadows"] {
+            if let intent = try physicalAdjustment(lighting, module: module, key: module, neutral: 0) {
+                result.composerDigitalLighting[module] = intent
+            }
+        }
         let balance = try section(lighting, "whiteBalance")
         if let color = balance["color"], !(color is NSNull) { warnings.append("White-balance sampled color metadata is retained but not converted.") }
         if let brightness = try number(try section(lighting, "brightness"), "brightness"), brightness != 0 {
@@ -146,8 +151,7 @@ public enum ComposerPresetCodec {
         let touchUp = try section(effects, "touchUp")
         if try flag(touchUp, "enabled") == false { result.touchUp = 0; applied.append("effects.touchUp.disabled") }
         else if let value = try number(touchUp, "touchUp") {
-            if value == 0 { result.touchUp = 0; applied.append("effects.touchUp.neutral") }
-            else { warnings.append("Touch Up amount is retained; original stored-value scaling is not established.") }
+            result.touchUp=min(0.5,max(0,value)); applied.append("effects.touchUp.touchUp")
         }
         let tone = try section(effects, "toneSync")
         if try flag(tone, "enabled") == false { result.toneSync = 0; applied.append("effects.toneSync.disabled") }
@@ -156,11 +160,23 @@ public enum ComposerPresetCodec {
             result.toneSync = amount; applied.append("effects.toneSync.adjustment")
         }
         let filters = try section(effects, "filters")
-        if try flag(filters, "enabled") == false { result.photoFilter = nil; applied.append("effects.filters.disabled") }
-        else if !filters.isEmpty { warnings.append("Filter selection is retained; its serialized identity is not mapped.") }
+        if let enabled = try flag(filters, "enabled") { result.photoFiltersEnabled = enabled; applied.append("effects.filters.enabled") }
+        if let intensity = try number(filters, "intensity") { result.photoFilterIntensity = intensity; applied.append("effects.filters.intensity") }
+        if let selected = filters["selected"] {
+            if selected is NSNull { result.photoFilter = nil; result.composerUnknownFilter = nil }
+            else if let identity = selected as? String {
+                result.photoFilter = PhotoFilter(composerIdentity: identity)
+                result.composerUnknownFilter = result.photoFilter == nil ? identity : nil
+                if result.photoFilter == nil { warnings.append("Unknown filter identity is retained without applying it.") }
+            } else { throw Invalid.document("Filter selected must be a String or null.") }
+            applied.append("effects.filters.selected")
+        }
         let pixelate = try section(effects, "pixelate")
-        if try flag(pixelate, "enabled") == false { result.pixelate = 0; applied.append("effects.pixelate.disabled") }
-        else if !pixelate.isEmpty { warnings.append("Pixelate is retained; its stored-value scale is not mapped.") }
+        if try flag(pixelate, "enabled") == false { result.composerPixelateLevel = -1; applied.append("effects.pixelate.disabled") }
+        else if let value=try number(pixelate,"pixellate") {
+            result.composerPixelateLevel=Int(min(4,max(-1,value.rounded(.towardZero))))
+            applied.append("effects.pixelate.pixellate")
+        }
         for key in ["stickers", "backgrounds"] {
             if try flag(try section(modules, key), "enabled") == true { warnings.append("\(key.capitalized) are excluded; no associated assets are imported.") }
         }
@@ -218,11 +234,32 @@ public enum ComposerPresetCodec {
             entry["contrast"] = contrast.value; entry["auto"] = contrast.automatic; entry["enabled"] = contrast.enabled
             lighting["contrast"] = entry
         }
+        for module in ["tint", "vibrance", "highlights", "shadows"] {
+            if let intent = settings.composerDigitalLighting[module] {
+                var entry = try section(lighting, module)
+                entry[module] = intent.value; entry["enabled"] = intent.enabled; entry["auto"] = intent.automatic
+                lighting[module] = entry
+            }
+        }
         modules["lighting"] = lighting
         var effects = try section(modules, "effects")
+        var filters = try section(effects, "filters")
+        filters["selected"] = settings.photoFilter?.composerIdentity ?? settings.composerUnknownFilter as Any? ?? NSNull()
+        filters["enabled"] = settings.photoFiltersEnabled
+        filters["intensity"] = settings.photoFilterIntensity
+        effects["filters"] = filters
         var tone = try section(effects, "toneSync")
         tone["enabled"] = settings.toneSync > 0; tone["adjustment"] = settings.toneSync
-        effects["toneSync"] = tone; modules["effects"] = effects
+        effects["toneSync"] = tone
+        var touch=try section(effects,"touchUp")
+        touch["touchUp"]=min(0.5,settings.touchUp);touch["enabled"]=settings.touchUp>0
+        effects["touchUp"]=touch
+        if let level=settings.composerPixelateLevel {
+            var pixel=try section(effects,"pixelate")
+            pixel["pixellate"]=level;pixel["enabled"]=level>=0
+            effects["pixelate"]=pixel
+        }
+        modules["effects"] = effects
         var color = try section(modules, "colorState")
         for (module, key, values) in [("hue", "colorHues", settings.colorBands.map { $0.hueOffset / 360 }),
             ("saturation", "colorSaturation", settings.colorBands.map(\.saturation)),
@@ -285,6 +322,41 @@ public enum ComposerPresetCodec {
         if let radius = try number(bokeh, "bokeh") { result.composerBokehRadius = radius }
         if try flag(tone, "enabled") == false { result.toneSync = 0 }
         else if let amount = try number(tone, "adjustment") { result.toneSync = amount }
+        let touch = try section(effects, "touchUp")
+        if try flag(touch, "enabled") == false { result.touchUp = 0 }
+        else if let value = try number(touch, "touchUp") { result.touchUp = min(0.5, max(0, value)) }
+        let pixel = try section(effects, "pixelate")
+        if try flag(pixel, "enabled") == false { result.composerPixelateLevel = -1 }
+        else if let value = try number(pixel, "pixellate") { result.composerPixelateLevel = Int(min(4, max(-1, value.rounded(.towardZero)))) }
+        let filters = try section(effects, "filters")
+        if !filters.isEmpty {
+            let imported = try decode(settingsData: archive.settingsData, fallbackName: "Imported", base: result)
+            result.photoFilter = imported.settings.photoFilter
+            result.photoFiltersEnabled = imported.settings.photoFiltersEnabled
+            result.photoFilterIntensity = imported.settings.photoFilterIntensity
+            result.composerUnknownFilter = imported.settings.composerUnknownFilter
+        }
+        return result.sanitized
+    }
+
+    /// Repairs effects omitted by the old importer only while their legacy
+    /// controls remain neutral. Call once with the retained original archive.
+    public static func migratingNewlyMappedEffects(settings: CameraSettings, archive: ComposerPresetArchive) throws -> CameraSettings {
+        let native = try decode(settingsData: archive.settingsData, fallbackName: "Imported", base: settings)
+        var result = settings
+        if settings.photoFilter == nil, settings.composerUnknownFilter == nil,
+           native.appliedFields.contains("effects.filters.selected") {
+            result.photoFilter = native.settings.photoFilter
+            result.photoFiltersEnabled = native.settings.photoFiltersEnabled
+            result.photoFilterIntensity = native.settings.photoFilterIntensity
+            result.composerUnknownFilter = native.settings.composerUnknownFilter
+        }
+        if settings.touchUp == 0,
+           native.appliedFields.contains("effects.touchUp.touchUp") { result.touchUp = native.settings.touchUp }
+        if settings.composerPixelateLevel == nil, settings.pixelate == 0,
+           native.appliedFields.contains(where: { $0.hasPrefix("effects.pixelate.") }) {
+            result.composerPixelateLevel = native.settings.composerPixelateLevel
+        }
         return result.sanitized
     }
 

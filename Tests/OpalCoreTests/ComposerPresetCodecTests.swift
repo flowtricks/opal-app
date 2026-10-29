@@ -67,7 +67,13 @@ final class ComposerPresetCodecTests: XCTestCase {
     }
 
     func testNativeZoomAmountMapsToCropScaleAndRoundTrips() throws {
-        for (amount, scale) in [(0.0, 1.0), (0.5, 1.75), (1.0, 2.5)] {
+        XCTAssertEqual(CameraSettings.composerZoomDisplay(forScale: 1), 1)
+        XCTAssertEqual(CameraSettings.composerZoomDisplay(forScale: 1.28125), 1.75)
+        XCTAssertEqual(CameraSettings.composerZoomDisplay(forScale: 1.5625), 2.5)
+        XCTAssertEqual(CameraSettings().composerBokehRadius, 7.6)
+        XCTAssertNil(try JSONDecoder().decode(CameraSettings.self, from: Data("{}".utf8)).composerBokehRadius)
+
+        for (amount, scale) in [(0.0, 1.0), (0.1875, 1.28125), (0.375, 1.5625)] {
             let data = Data("{\"version\":1,\"settings\":{\"zoom\":{\"enabled\":true,\"zoom\":\(amount)}}}".utf8)
             let imported = try ComposerPresetCodec.decode(settingsData: data, fallbackName: "Zoom")
             XCTAssertEqual(imported.settings.zoom, scale, accuracy: 0.000001)
@@ -209,9 +215,84 @@ final class ComposerPresetCodecTests: XCTestCase {
         let output = try ComposerPresetCodec.encode(settings: CameraSettings(), name: "New")
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: output.settingsData) as? [String: Any])
         let settings = try XCTUnwrap(root["settings"] as? [String: Any])
-        XCTAssertNil((settings["bokeh"] as? [String: Any])?["bokeh"])
+        XCTAssertEqual((settings["bokeh"] as? [String: Any])?["bokeh"] as? Double, 7.6)
         let effects = try XCTUnwrap(settings["effects"] as? [String: Any])
         XCTAssertEqual((effects["toneSync"] as? [String: Any])?["adjustment"] as? Double, 0)
         XCTAssertFalse(output.warnings.isEmpty)
+    }
+}
+
+extension ComposerPresetCodecTests {
+    func testNewlyMappedEffectsMigrationPreservesLegacyEdits() throws {
+        let data=Data(#"{"version":1,"settings":{"effects":{"touchUp":{"enabled":true,"touchUp":0.4},"pixelate":{"enabled":true,"pixellate":3}}}}"#.utf8)
+        let archive=ComposerPresetArchive(settingsData:data,metadataData:nil)
+        var old=try JSONDecoder().decode(CameraSettings.self,from:Data("{}".utf8))
+        let migrated=try ComposerPresetCodec.migratingNewlyMappedEffects(settings:old,archive:archive)
+        XCTAssertEqual(migrated.touchUp,0.4);XCTAssertEqual(migrated.composerPixelateLevel,3)
+        old.touchUp=0.2;old.pixelate=23
+        XCTAssertEqual(try ComposerPresetCodec.migratingNewlyMappedEffects(settings:old,archive:archive),old)
+        let restored=try ComposerPresetCodec.restoringMappedEffects(settings:old,archive:archive)
+        XCTAssertEqual(restored.touchUp,0.4);XCTAssertEqual(restored.composerPixelateLevel,3)
+    }
+
+    func testNativePixelateAndTouchUpArchiveMapping() throws {
+        for level in -1...4 {
+            let source=Data("{\"version\":1,\"settings\":{\"effects\":{\"touchUp\":{\"touchUp\":0.35,\"enabled\":true},\"pixelate\":{\"pixellate\":\(level),\"enabled\":true,\"future\":7}}}}".utf8)
+            let imported=try ComposerPresetCodec.decode(settingsData:source,fallbackName:"Native")
+            XCTAssertEqual(imported.settings.touchUp,0.35)
+            XCTAssertEqual(imported.settings.composerPixelateLevel,level)
+            let exported=try ComposerPresetCodec.encode(settings:imported.settings,name:"Native",archive:imported.archive)
+            let root=try XCTUnwrap(JSONSerialization.jsonObject(with:exported.settingsData) as? [String:Any])
+            let settings=try XCTUnwrap(root["settings"] as? [String:Any])
+            let effects=try XCTUnwrap(settings["effects"] as? [String:Any])
+            let pixel=try XCTUnwrap(effects["pixelate"] as? [String:Any])
+            XCTAssertEqual(pixel["pixellate"] as? Int,level)
+            XCTAssertEqual(pixel["enabled"] as? Bool,level>=0)
+            XCTAssertEqual(pixel["future"] as? Int,7)
+            let decoded=try ComposerPresetCodec.decode(settingsData:exported.settingsData,fallbackName:"Native")
+            XCTAssertEqual(decoded.settings.composerPixelateLevel,level)
+            XCTAssertEqual(decoded.settings.touchUp,0.35)
+        }
+        let disabled=Data(#"{"version":1,"settings":{"effects":{"touchUp":{"enabled":false,"touchUp":0.5},"pixelate":{"enabled":false,"pixellate":4}}}}"#.utf8)
+        let imported=try ComposerPresetCodec.decode(settingsData:disabled,fallbackName:"Disabled")
+        XCTAssertEqual(imported.settings.touchUp,0)
+        XCTAssertEqual(imported.settings.composerPixelateLevel,-1)
+    }
+}
+
+extension ComposerPresetCodecTests {
+    func testNativeFilterStringIdentitiesAndIntensityRoundTrip() throws {
+        let identities:[PhotoFilter:String] = [.chrome:"C1",.fade:"F1",.instant:"I2",.mono:"M1",.noir:"N2",.process:"P1",.tonal:"T1",.transfer:"T2",.g1:"G1",.d1:"D1",.q1:"Q1",.x1:"X1",.s1:"S1"]
+        for (filter,identity) in identities {
+            let data=Data("{\"version\":1,\"settings\":{\"effects\":{\"filters\":{\"selected\":\"\(identity)\",\"enabled\":false,\"intensity\":0.35}}}}".utf8)
+            let imported=try ComposerPresetCodec.decode(settingsData:data,fallbackName:"Filter")
+            XCTAssertEqual(imported.settings.photoFilter,filter)
+            XCTAssertEqual(imported.settings.photoFilterIntensity,0.35)
+            XCTAssertFalse(imported.settings.photoFiltersEnabled)
+            XCTAssertEqual(filter.composerIdentity,identity)
+            let exported=try ComposerPresetCodec.encode(settings:imported.settings,name:"Filter",archive:imported.archive)
+            let again=try ComposerPresetCodec.decode(settingsData:exported.settingsData,fallbackName:"Again")
+            XCTAssertEqual(again.settings.photoFilter,filter)
+            XCTAssertFalse(again.settings.photoFiltersEnabled)
+            XCTAssertEqual(again.settings.photoFilterIntensity,0.35)
+        }
+        let unknown=Data(#"{"version":1,"settings":{"effects":{"filters":{"selected":"future","enabled":true,"intensity":0.25}}}}"#.utf8)
+        let first=try ComposerPresetCodec.decode(settingsData:unknown,fallbackName:"Future")
+        XCTAssertNil(first.settings.photoFilter);XCTAssertEqual(first.settings.composerUnknownFilter,"future")
+        let exported=try ComposerPresetCodec.encode(settings:first.settings,name:"Future",archive:first.archive)
+        XCTAssertEqual(try ComposerPresetCodec.decode(settingsData:exported.settingsData,fallbackName:"Future").settings.composerUnknownFilter,"future")
+        XCTAssertThrowsError(try ComposerPresetCodec.decode(settingsData:Data(#"{"version":1,"settings":{"effects":{"filters":{"selected":{"name":"C1"}}}}}"#.utf8),fallbackName:"Bad"))
+    }
+    func testAutomaticDigitalLightingRetainsManualValueAndFlags() throws {
+        let data=Data(#"{"version":1,"settings":{"lighting":{"tint":{"tint":23,"auto":true,"enabled":false},"vibrance":{"vibrance":0.4,"auto":true,"enabled":false},"highlights":{"highlights":0.6,"auto":true,"enabled":false},"shadows":{"shadows":-0.3,"auto":true,"enabled":false}}}}"#.utf8)
+        let imported=try ComposerPresetCodec.decode(settingsData:data,fallbackName:"Auto")
+        XCTAssertEqual(imported.settings.tint,0);XCTAssertEqual(imported.settings.highlights,1)
+        XCTAssertEqual(imported.settings.vibrance,0);XCTAssertEqual(imported.settings.shadows,0)
+        let expected:[String:Double] = ["tint":23,"vibrance":0.4,"highlights":0.6,"shadows":-0.3]
+        for (field,value) in expected { XCTAssertEqual(imported.settings.composerDigitalLighting[field],.init(value:value,automatic:true,enabled:false)) }
+        let exported=try ComposerPresetCodec.encode(settings:imported.settings,name:"Auto",archive:imported.archive)
+        let again=try ComposerPresetCodec.decode(settingsData:exported.settingsData,fallbackName:"Again")
+        XCTAssertEqual(again.settings.composerDigitalLighting,imported.settings.composerDigitalLighting)
+        XCTAssertEqual(try JSONDecoder().decode(CameraSettings.self,from:JSONEncoder().encode(again.settings)),again.settings)
     }
 }

@@ -1,0 +1,11 @@
+# White-balance completion invalidates Tone Sync
+
+2026-10-29, installed Composer arm64 app, static evidence only.
+
+Swift reflection field descriptor0x100721f18 identifies fourteen fields of `DeviceInfo`. Its symbolic type reference at0x1006cf056 resolves nominal descriptor0x1006ba05c, whose name is `DeviceInfo`. Fields in order are fps,focus,exp,sensitivity,hasExpChanged,hasSensitivityChanged,hasWhiteBalanceChanged,sensorTemp,avgTemp,whiteBalance,gainR,gainGr,gainGb,gainB. The three changed flags are Bool; the third is the white-balance flag. The struct's first four4-byte values place these at offsets0x10,0x11,0x12. `inspect-fields.py` parses the Mach-O load commands and relative Swift field records directly; `field-layout.txt` retains its output.
+
+In the frame callback,0x10010110c/110/114 load the third/second/first flags from the async frame storage at+0x17e/+0x17d/+0x17c. Instructions0x100101184…1b4 pack these into the DeviceInfo value at+0x10/+0x11/+0x12. At0x1001011b8 the third flag gates a branch; when true the callback sends `setSkinAdjustmentReload` at0x1001011dc. This establishes that white-balance changes invalidate the cached Tone Sync face calibration. It is not an invented retry interval.
+
+Studio's stock-UVC control path previously completed manual white balance after capture had already produced some frames, but retained Tone Sync calibration from those earlier frames. `StudioModel.onWhiteBalanceApplied` now increments the calibration revision after the controller reports a successful hardware completion. A small state tracker emits once for the first verified completion, then only for changed Kelvin/mode, and resets when the device loses white-balance availability. It does not change presets on failure or reset repeatedly for duplicate completions. Three tests cover startup, duplicates, changed value/mode, reconnection, and invalid manual readback.
+
+The stock controller currently obtains white-balance state on initial read and explicit control completion. It has no per-frame DeviceInfo telemetry like the original capture stack. Therefore spontaneous auto-white-balance changes between explicit completions remain an observation gap; no polling timer or assumed color-change heuristic was added. The exact firmware producer/threshold of `hasWhiteBalanceChanged` is not established by this static callback evidence.

@@ -3,9 +3,8 @@ import CoreVideo
 import Metal
 import Vision
 
-/// Composer's Apple-GPU segmentation branch. Confined to one processing queue.
-/// The non-Apple branch uses a different model and refinement pipeline; callers
-/// must not silently claim this implementation reproduces that branch.
+/// Composer's hardware-selected Vision/GoogleMeets segmentation branches.
+/// Confined to one processing queue.
 public final class ComposerPersonSegmenter {
     public enum SegmentationError: LocalizedError {
         case unsupportedGPU(String)
@@ -21,6 +20,7 @@ public final class ComposerPersonSegmenter {
 
     private var sequence = VNSequenceRequestHandler()
     private var hasReceivedFirstFrame = false
+    private var google: ComposerGooglePersonSegmenter?
     private let gpuName: String
     public private(set) var lastInferenceError: Error?
 
@@ -36,17 +36,26 @@ public final class ComposerPersonSegmenter {
         sequence = VNSequenceRequestHandler()
         hasReceivedFirstFrame = false
         lastInferenceError = nil
+        google = nil
     }
 
     /// Full-resolution linear person mask. Native failure/warmup behavior is a
     /// white mask (all foreground), rather than an unrelated fallback model.
     public func mask(for image: CIImage) throws -> CIImage {
-        guard Self.usesAppleVision(gpuName: gpuName) else {
-            throw SegmentationError.unsupportedGPU(gpuName)
-        }
         let bounds = image.extent
         guard !bounds.isEmpty, !bounds.isInfinite, !bounds.isNull else {
             throw SegmentationError.invalidImageExtent
+        }
+        if !Self.usesAppleVision(gpuName: gpuName) {
+            do {
+                if google == nil { google = try ComposerGooglePersonSegmenter() }
+                let result = try google!.mask(for: image)
+                lastInferenceError = nil
+                return result
+            } catch {
+                lastInferenceError = error
+                return Self.foregroundMask(in: bounds)
+            }
         }
         guard hasReceivedFirstFrame else {
             hasReceivedFirstFrame = true
@@ -65,7 +74,7 @@ public final class ComposerPersonSegmenter {
             }
             lastInferenceError = nil
             let rawMask = CIImage(cvPixelBuffer: buffer, options: [.colorSpace: NSNull()])
-            return Self.resizedMask(rawMask, to: bounds)
+            return try Self.resizedMask(rawMask, to: bounds)
         } catch {
             lastInferenceError = error
             return Self.foregroundMask(in: bounds)
@@ -74,13 +83,9 @@ public final class ComposerPersonSegmenter {
 
     // No Gaussian feathering or manual temporal dissolve exists in the original
     // Apple path. Keep half-float values, including sub-8-bit edge coverage.
-    static func resizedMask(_ mask: CIImage, to bounds: CGRect) -> CIImage {
-        let origin = mask.extent.origin
-        return mask.transformed(by: CGAffineTransform(translationX: -origin.x, y: -origin.y))
-            .transformed(by: CGAffineTransform(scaleX: bounds.width / mask.extent.width,
-                                               y: bounds.height / mask.extent.height))
-            .transformed(by: CGAffineTransform(translationX: bounds.minX, y: bounds.minY))
-            .cropped(to: bounds)
+    static func resizedMask(_ mask: CIImage, to bounds: CGRect) throws -> CIImage {
+        try ComposerAppleMaskResize.apply(withExtent: bounds, inputs: [mask],
+            arguments: ["inputBounds": mask.extent, "outputBounds": bounds])
     }
 
     private static func foregroundMask(in bounds: CGRect) -> CIImage {
@@ -89,5 +94,29 @@ public final class ComposerPersonSegmenter {
 
     private struct MissingMask: LocalizedError {
         var errorDescription: String? { "Person segmentation returned no mask." }
+    }
+}
+
+private final class ComposerAppleMaskResize: CIImageProcessorKernel {
+    override class var synchronizeInputs: Bool { false }
+    override class var outputFormat: CIFormat { .Rh }
+    override class func formatForInput(at inputIndex: Int32) -> CIFormat { .Rh }
+    override class func roi(forInput inputIndex: Int32, arguments: [String: Any]?, outputRect: CGRect) -> CGRect {
+        arguments?["inputBounds"] as? CGRect ?? outputRect
+    }
+    override class func process(with inputs: [CIImageProcessorInput]?, arguments: [String: Any]?, output: CIImageProcessorOutput) throws {
+        guard let input = inputs?.first, let source = input.metalTexture,
+              let destination = output.metalTexture, let command = output.metalCommandBuffer,
+              let bounds = arguments?["outputBounds"] as? CGRect else { throw ComposerNativeShaders.Failure.encoderUnavailable }
+        let shaders = try ComposerNativeShaders.resources(for: command.device)
+        let descriptor = MTLSamplerDescriptor()
+        descriptor.minFilter = .linear; descriptor.magFilter = .linear
+        descriptor.sAddressMode = .clampToZero; descriptor.tAddressMode = .clampToZero
+        guard let sampler = command.device.makeSamplerState(descriptor: descriptor) else { throw ComposerNativeShaders.Failure.encoderUnavailable }
+        let region = CGRect(x: (output.region.minX - bounds.minX) / bounds.width,
+                            y: (bounds.maxY - output.region.maxY) / bounds.height,
+                            width: output.region.width / bounds.width, height: output.region.height / bounds.height)
+        try shaders.encode(fragment: "metalpetal::passthrough", inputs: [source], buffers: [],
+                           destination: destination, commandBuffer: command, textureRegion: region, samplerState: sampler)
     }
 }

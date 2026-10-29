@@ -20,7 +20,7 @@ final class ComposerPersonSegmenterTests: XCTestCase {
         let data = input.withUnsafeBytes { Data($0) }
         let mask = CIImage(bitmapData: data, bytesPerRow: 8, size: CGSize(width: 4, height: 1),
                            format: .Rh, colorSpace: nil)
-        let output = ComposerPersonSegmenter.resizedMask(mask, to: CGRect(x: 10, y: 20, width: 4, height: 1))
+        let output = try ComposerPersonSegmenter.resizedMask(mask, to: CGRect(x: 10, y: 20, width: 4, height: 1))
         XCTAssertEqual(output.extent, CGRect(x: 10, y: 20, width: 4, height: 1))
         for (actual, expected) in zip(values(output), input.map(Float.init)) {
             XCTAssertEqual(actual, expected, accuracy: 0.00001)
@@ -36,10 +36,15 @@ final class ComposerPersonSegmenterTests: XCTestCase {
         XCTAssertNil(segmenter.lastInferenceError)
     }
 
-    func testNonAppleDoesNotSilentlyUseWrongModel() {
+    func testNonAppleUsesBundledGoogleModelAndNativeRefinement() throws {
         let segmenter = ComposerPersonSegmenter(gpuName: "AMD Radeon Pro")
-        let image = CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0, width: 16, height: 9))
-        XCTAssertThrowsError(try segmenter.mask(for: image))
+        let image = CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0, width: 1280, height: 720))
+        let result = try segmenter.mask(for: image)
+        XCTAssertNil(segmenter.lastInferenceError)
+        XCTAssertEqual(result.extent, image.extent)
+        let mask = values(result)
+        XCTAssertTrue(mask.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1 })
+        XCTAssertLessThan(mask.max() ?? 1, 0.1, "Empty black scene must not become warmup/failure white")
     }
 
     func testAppleMaskMatchesIndependentNativeRequestForSyntheticFrame() throws {
@@ -55,13 +60,28 @@ final class ComposerPersonSegmenterTests: XCTestCase {
         let buffer = try XCTUnwrap(reference.results?.first?.pixelBuffer)
         XCTAssertEqual(CVPixelBufferGetPixelFormatType(buffer), kCVPixelFormatType_OneComponent16Half)
         let raw = CIImage(cvPixelBuffer: buffer, options: [.colorSpace: NSNull()])
-        let expected = raw.transformed(by: .init(scaleX: bounds.width / raw.extent.width,
-                                                y: bounds.height / raw.extent.height)).cropped(to: bounds)
+        // Independent CPU oracle for native linear sampling with zero border,
+        // rather than Core Image's different affine reconstruction filter.
+        let rawValues = values(raw), rw = Int(raw.extent.width), rh = Int(raw.extent.height)
+        func sample(_ x: Int, _ y: Int) -> Float {
+            x >= 0 && y >= 0 && x < rw && y < rh ? rawValues[y * rw + x] : 0
+        }
+        var expected: [Float] = []
+        for y in 0..<Int(bounds.height) {
+            for x in 0..<Int(bounds.width) {
+                let u = (Float(x) + 0.5) * Float(rw) / Float(bounds.width) - 0.5
+                let v = (Float(y) + 0.5) * Float(rh) / Float(bounds.height) - 0.5
+                let ix = Int(floor(u)), iy = Int(floor(v)), fx = u - floor(u), fy = v - floor(v)
+                let a = sample(ix, iy) * (1 - fx) + sample(ix + 1, iy) * fx
+                let b = sample(ix, iy + 1) * (1 - fx) + sample(ix + 1, iy + 1) * fx
+                expected.append(Float(Float16(a * (1 - fy) + b * fy)))
+            }
+        }
         let segmenter = ComposerPersonSegmenter()
         _ = try segmenter.mask(for: image)
         let actual = try segmenter.mask(for: image)
         XCTAssertNil(segmenter.lastInferenceError)
-        let differences = zip(values(actual), values(expected)).map { abs($0 - $1) }
-        XCTAssertLessThan(differences.max() ?? 1, 0.001)
+        let differences = zip(values(actual), expected).map { abs($0 - $1) }
+        XCTAssertLessThan(differences.max() ?? 1, 0.00002)
     }
 }

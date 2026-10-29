@@ -1,17 +1,65 @@
 import CoreImage
 import Foundation
+import CoreVideo
+import Metal
 
-/// Independent reconstruction from the installed app's shader equations and
-/// native filter parameters. See research/effects/README.md for provenance and
-/// the remaining segmentation/color-space differences from the vendor pipeline.
+/// Original shader operations and recovered Core Image filter parameters.
+/// See research/tonesync-oracle/README.md for native rendering and lifecycle
+/// evidence, including the independent original-shader oracle.
 final class SkinEffects {
     static var toneSyncAvailable: Bool { CIFilter(name: "CIFaceBalance") != nil }
-    private var calibration: (i: Double, q: Double)?
-    private var calibrationRevision = -1
-    private var attemptedCalibrationFrame = -30
-    private var frame = 0
+    private let calibrationQueue: DispatchQueue
+    private let calibrationLock = NSLock()
+    private var calibrationState = ComposerToneSyncCalibration()
+    private let displaySpace = CGColorSpaceCreateDeviceRGB()
+    // CIContext is thread-safe; initialize it before dispatching calibration so
+    // worker and render queues never race lazy initialization.
+    private let nativeContext: CIContext
+    init(calibrationQueue: DispatchQueue = DispatchQueue(label: "com.flowtricks.opal.tonesync-calibration", qos: .userInitiated)) {
+        self.calibrationQueue = calibrationQueue
+        let options: [CIContextOption: Any] = [
+            .workingColorSpace: displaySpace, .outputColorSpace: displaySpace,
+            .workingFormat: CIFormat.BGRA8, .cacheIntermediates: true,
+            .allowLowPower: true, .useSoftwareRenderer: false
+        ]
+        if let device = MTLCreateSystemDefaultDevice() { nativeContext = CIContext(mtlDevice: device, options: options) }
+        else { nativeContext = CIContext(options: options) }
+    }
+    private var nativePool: CVPixelBufferPool?
+    private var nativePoolSize = CGSize.zero
 
-    func reset() { calibration = nil; calibrationRevision = -1; frame = 0; attemptedCalibrationFrame = -30 }
+    /// New buffer per graph: pool buffers cannot be reused while CIImage still
+    /// retains them. These GPU renders never read camera pixels back to the CPU.
+    private func displayImage(_ image: CIImage, renderingWith context: CIContext) throws -> CIImage {
+        let bounds = image.extent
+        if nativePool == nil || nativePoolSize != bounds.size {
+            nativePool = nil
+            let attributes: [String: Any] = [
+                kCVPixelBufferWidthKey as String: Int(bounds.width),
+                kCVPixelBufferHeightKey as String: Int(bounds.height),
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+                kCVPixelBufferMetalCompatibilityKey as String: true
+            ]
+            guard CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &nativePool) == kCVReturnSuccess else {
+                throw SkinEffectError.bufferUnavailable
+            }
+            nativePoolSize = bounds.size
+        }
+        var buffer: CVPixelBuffer?
+        guard let pool = nativePool,
+              CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) == kCVReturnSuccess,
+              let buffer else { throw SkinEffectError.bufferUnavailable }
+        let translated = image.transformed(by: .init(translationX: -bounds.minX, y: -bounds.minY))
+        context.render(translated, to: buffer, bounds: CGRect(origin: .zero, size: bounds.size), colorSpace: displaySpace)
+        return CIImage(cvPixelBuffer: buffer, options: [.colorSpace: displaySpace])
+            .transformed(by: .init(translationX: bounds.minX, y: bounds.minY))
+    }
+
+    func reset() {
+        calibrationLock.lock(); defer { calibrationLock.unlock() }
+        calibrationState.reset()
+    }
 
     static let guide = CIColorKernel(source: """
         kernel vec4 guide(__sample color) {
@@ -75,47 +123,73 @@ final class SkinEffects {
         """)
 
     func touchUp(_ image: CIImage, personMask: CIImage, amount: Double) throws -> CIImage {
-        let bounds = image.extent
-        // MetalPetal's BGRA textures contain display RGB; CI's working values are linear RGB.
-        let encoded = image.applyingFilter("CILinearToSRGBToneCurve")
-        guard let guide = Self.guide?.apply(extent: bounds, arguments: [encoded]),
-              let toned = Self.applyCurve?.apply(extent: bounds, roiCallback: { index, rect in
-                  index == 1 ? CGRect(x: 0, y: 0, width: 256, height: 1) : rect
-              }, arguments: [encoded, Self.curveImage]) else { throw SkinEffectError.kernelUnavailable }
-        let blurred = guide.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 8]).cropped(to: bounds)
-        guard let detail = Self.detailMask?.apply(extent: bounds, arguments: [guide, blurred]) else { throw SkinEffectError.kernelUnavailable }
-        let adjusted = encoded.applyingFilter("CIDissolveTransition", parameters: ["inputTargetImage": toned, "inputTime": amount])
-        let protected = encoded.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: adjusted, kCIInputMaskImageKey: detail])
-        let result = protected.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: encoded, kCIInputMaskImageKey: personMask])
-        return result.applyingFilter("CISRGBToneCurveToLinear").cropped(to: bounds)
+        try ComposerTouchUp.apply(image, personMask: personMask, amount: amount)
     }
 
     func toneSync(_ image: CIImage, personMask: CIImage, face: CGRect?, amount: Double,
                   warmth: Double, revision: Int, context: CIContext) throws -> CIImage {
-        frame += 1
-        if revision != calibrationRevision { calibration = nil; calibrationRevision = revision; attemptedCalibrationFrame = -30 }
-        if calibration == nil, let face, frame-attemptedCalibrationFrame >= 30 {
-            attemptedCalibrationFrame = frame
-            calibration = try calibrate(image, personMask: personMask, face: face, context: context)
+        calibrationLock.lock()
+        let plan = calibrationState.plan(revision: revision, hasFace: face != nil)
+        calibrationLock.unlock()
+        guard plan.value != nil || plan.generation != nil else { return image }
+        let nativeImage: CIImage
+        do { nativeImage = try displayImage(image, renderingWith: context) }
+        catch {
+            if let generation = plan.generation {
+                calibrationLock.lock(); calibrationState.complete(generation: generation, result: nil); calibrationLock.unlock()
+            }
+            throw error
         }
-        guard let calibration else { return image }
+        if let generation = plan.generation, let face {
+            // CIImages retain their frame buffers and masks until this bounded
+            // job completes. KMeans and its one-pixel readback never stall capture.
+            calibrationQueue.async { [weak self] in
+                guard let self else { return }
+                let result = try? self.calibrateDisplayImage(nativeImage, personMask: personMask, face: face)
+                let chroma = result.map { ComposerToneSyncCalibration.Chroma(i: $0.i, q: $0.q) }
+                self.calibrationLock.lock()
+                self.calibrationState.complete(generation: generation, result: chroma)
+                self.calibrationLock.unlock()
+            }
+        }
+        guard let calibration = plan.value else { return image }
         guard let filter = CIFilter(name: "CIFaceBalance") else { throw SkinEffectError.toneSyncUnavailable }
-        filter.setValue(image, forKey: kCIInputImageKey)
+        filter.setValue(nativeImage, forKey: kCIInputImageKey)
         filter.setValue(amount*2, forKey: "inputStrength")
         filter.setValue(warmth, forKey: "inputWarmth")
         filter.setValue(calibration.i, forKey: "inputOrigI")
         filter.setValue(calibration.q, forKey: "inputOrigQ")
         guard let adjusted = filter.outputImage else { throw SkinEffectError.toneSyncUnavailable }
-        return adjusted.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: image, kCIInputMaskImageKey: personMask]).cropped(to: image.extent)
+        // The native CI bridge materializes FaceBalance to BGRA8 before the
+        // MetalPetal blend. CIBlendWithMask does not read our Rh red channel;
+        // it silently treats the segmentation result as an empty mask.
+        let balanced = try displayImage(adjusted, renderingWith: nativeContext)
+        let blended = try ComposerNativeMaskBlend.applyDisplayRGB(balanced, mask: personMask, background: nativeImage)
+        return try displayImage(blended, renderingWith: nativeContext)
+    }
+
+    /// MTICoreImageFilter's original single-filter bridge explicitly passes
+    /// Device RGB (0x10005449c–0x1000544c4). Running these filters in CI's
+    /// default linear working space changes their actual transfer curves.
+    func photoEffect(_ image: CIImage, name: String, context: CIContext) throws -> CIImage {
+        let nativeImage = try displayImage(image, renderingWith: context)
+        guard let filter = CIFilter(name: name) else { throw SkinEffectError.kernelUnavailable }
+        filter.setValue(nativeImage, forKey: kCIInputImageKey)
+        guard let result = filter.outputImage else { throw SkinEffectError.kernelUnavailable }
+        return try displayImage(result.cropped(to: image.extent), renderingWith: nativeContext)
     }
 
     func calibrate(_ image: CIImage, personMask: CIImage, face: CGRect, context: CIContext) throws -> (i: Double, q: Double)? {
+        let display = try displayImage(image, renderingWith: context)
+        return try calibrateDisplayImage(display, personMask: personMask, face: face)
+    }
+
+    private func calibrateDisplayImage(_ image: CIImage, personMask: CIImage, face: CGRect) throws -> (i: Double, q: Double)? {
         let crop = face.insetBy(dx: face.width*0.075, dy: face.height*0.15).intersection(image.extent)
         guard !crop.isEmpty, crop.width >= 2, crop.height >= 2 else { return nil }
-        let encoded = image.applyingFilter("CILinearToSRGBToneCurve")
-        guard let skin = Self.extractSkin?.apply(extent: image.extent, arguments: [encoded, personMask]),
+        guard let skin = Self.extractSkin?.apply(extent: image.extent, arguments: [image, personMask]),
               let kmeans = CIFilter(name: "CIKMeans") else { throw SkinEffectError.kernelUnavailable }
-        let input = skin.cropped(to: crop).applyingFilter("CISRGBToneCurveToLinear")
+        let input = skin.cropped(to: crop)
         kmeans.setValue(input, forKey: kCIInputImageKey)
         kmeans.setValue(CIVector(cgRect: crop), forKey: "inputExtent")
         kmeans.setValue(1, forKey: "inputCount")
@@ -124,9 +198,9 @@ final class SkinEffects {
         kmeans.setValue(CIImage(color: CIColor(red: 0.6, green: 0.5, blue: 0.4)).cropped(to: CGRect(x: 0,y: 0,width: 1,height: 1)), forKey: "inputMeans")
         guard let output = kmeans.outputImage else { return nil }
         var rgb = [UInt8](repeating: 0, count: 4)
-        context.render(output, toBitmap: &rgb, rowBytes: 4, bounds: CGRect(x: 0,y: 0,width: 1,height: 1), format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        nativeContext.render(output, toBitmap: &rgb, rowBytes: 4, bounds: CGRect(x: 0,y: 0,width: 1,height: 1), format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
         let chroma = Self.yiq(r: Double(rgb[0])/255, g: Double(rgb[1])/255, b: Double(rgb[2])/255)
-        return abs(chroma.i) > 0.000001 && abs(chroma.q) > 0.000001 ? chroma : nil
+        return chroma
     }
 
     static func yiq(r: Double, g: Double, b: Double) -> (i: Double, q: Double) {
@@ -134,9 +208,10 @@ final class SkinEffects {
     }
 
     enum SkinEffectError: LocalizedError {
-        case kernelUnavailable, toneSyncUnavailable
+        case kernelUnavailable, toneSyncUnavailable, bufferUnavailable
         var errorDescription: String? {
             switch self {
+            case .bufferUnavailable: return "The Tone Sync GPU image buffer could not be allocated."
             case .kernelUnavailable: return "The skin effects renderer could not be initialized."
             case .toneSyncUnavailable: return "Tone Sync is unavailable on this macOS version (CIFaceBalance is missing)."
             }

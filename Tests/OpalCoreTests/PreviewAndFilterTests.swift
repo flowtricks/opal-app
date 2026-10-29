@@ -22,7 +22,7 @@ final class PreviewAndFilterTests: XCTestCase {
         } }
         CVPixelBufferUnlockBaseAddress(buffer, [])
         let processor = EffectsProcessor()
-        var settings = CameraSettings(); settings.blurEnabled = false; settings.photoFilter = .mono
+        var settings = CameraSettings(); settings.blurEnabled = false; settings.photoFilter = .mono; settings.photoFilterIntensity = 1
         let output = try processor.process(buffer, settings: settings)
         CVPixelBufferLockBaseAddress(output, .readOnly)
         let result = CVPixelBufferGetBaseAddress(output)!.assumingMemoryBound(to: UInt8.self)

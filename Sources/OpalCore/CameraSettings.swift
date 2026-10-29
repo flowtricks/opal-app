@@ -7,6 +7,8 @@ public struct CameraSettings: Codable, Equatable, Sendable {
     /// Display-sRGB point selected as neutral; no image or screenshot is stored.
     public var whiteBalanceSampleRGB: [Double]?
     public var manualLightingFields: Set<String> = []
+    /// Retains native manual values while automatic mode bypasses the adjustment.
+    public var composerDigitalLighting: [String: ComposerPhysicalAdjustment] = [:]
     public static let lightingFieldKeys: Set<String> = ["warmth", "tint", "exposure", "highlights", "shadows", "saturation", "contrast", "vibrance"]
     public var colorEnabled = true
     public var blurEnabled = true
@@ -18,7 +20,7 @@ public struct CameraSettings: Codable, Equatable, Sendable {
     public var composerExposure: ComposerPhysicalAdjustment?
     public var composerWhiteBalance: ComposerPhysicalAdjustment?
     public var composerSaturation: ComposerPhysicalAdjustment?
-    public var composerBokehRadius: Double?
+    public var composerBokehRadius: Double? = 7.6
     public var composerContrast: ComposerContrastAdjustment?
     /// Independent software exposure in photographic stops.
     public var exposure = 0.0
@@ -35,11 +37,22 @@ public struct CameraSettings: Codable, Equatable, Sendable {
     public var toneSync = 0.0
     public var toneSyncWarmth = 0.5
     public var toneSyncCalibrationRevision = 0
+    /// Legacy pixel-width setting, retained for old saved documents.
     public var pixelate = 0.0
+    /// Native discrete level: -1 disables, 0...4 selects Composer's five scales.
+    /// Missing in old documents retains the legacy pixel-width renderer.
+    public var composerPixelateLevel: Int? = -1
     public var photoFilter: PhotoFilter?
-    public var photoFilterIntensity = 1.0
+    public var photoFiltersEnabled = true
+    /// Unknown native selection is retained for lossless archive transfer.
+    public var composerUnknownFilter: String?
+    public var photoFilterIntensity = 0.5
     public var backgroundImageURL: URL?
     public var zoom = 1.0
+    /// Composer labels raw zoom differently from its physical crop scale.
+    public static func composerZoomDisplay(forScale scale: Double) -> Double { 1 + (scale - 1) / 1.5 * 4 }
+    public var zoomDisplay: Double { Self.composerZoomDisplay(forScale: zoom) }
+
     public var mirror = false
     public var faceLockEnabled = false
     public var faceLockSensitivity: FaceLockSensitivity = .standard
@@ -57,6 +70,7 @@ public struct CameraSettings: Codable, Equatable, Sendable {
         case lightingEnabled
         case whiteBalanceSampleRGB
         case manualLightingFields
+        case composerDigitalLighting
         case colorEnabled
         case blurEnabled
         case blurRadius
@@ -80,7 +94,10 @@ public struct CameraSettings: Codable, Equatable, Sendable {
         case toneSyncWarmth
         case toneSyncCalibrationRevision
         case pixelate
+        case composerPixelateLevel
         case photoFilter
+        case photoFiltersEnabled
+        case composerUnknownFilter
         case photoFilterIntensity
         case backgroundImageURL
         case zoom
@@ -127,8 +144,12 @@ public struct CameraSettings: Codable, Equatable, Sendable {
         toneSyncWarmth = try container.decodeIfPresent(Double.self, forKey: .toneSyncWarmth) ?? toneSyncWarmth
         toneSyncCalibrationRevision = try container.decodeIfPresent(Int.self, forKey: .toneSyncCalibrationRevision) ?? toneSyncCalibrationRevision
         pixelate = try container.decodeIfPresent(Double.self, forKey: .pixelate) ?? pixelate
+        composerPixelateLevel = try container.decodeIfPresent(Int.self, forKey:.composerPixelateLevel)
+        photoFiltersEnabled = try container.decodeIfPresent(Bool.self, forKey: .photoFiltersEnabled) ?? true
+        composerUnknownFilter = try container.decodeIfPresent(String.self, forKey: .composerUnknownFilter)
+        composerDigitalLighting = try container.decodeIfPresent([String: ComposerPhysicalAdjustment].self, forKey: .composerDigitalLighting) ?? [:]
         photoFilter = try container.decodeIfPresent(PhotoFilter.self, forKey: .photoFilter)
-        photoFilterIntensity = try container.decodeIfPresent(Double.self, forKey: .photoFilterIntensity) ?? photoFilterIntensity
+        photoFilterIntensity = try container.decodeIfPresent(Double.self, forKey: .photoFilterIntensity) ?? 1.0
         backgroundImageURL = try container.decodeIfPresent(URL.self, forKey: .backgroundImageURL)
         zoom = try container.decodeIfPresent(Double.self, forKey: .zoom) ?? zoom
         mirror = try container.decodeIfPresent(Bool.self, forKey: .mirror) ?? mirror
@@ -151,6 +172,7 @@ public struct CameraSettings: Codable, Equatable, Sendable {
             value.whiteBalanceSampleRGB=sample.map { min(1,max(0,$0)) }
         } else { value.whiteBalanceSampleRGB=nil }
         value.manualLightingFields=manualLightingFields.intersection(Self.lightingFieldKeys)
+        value.composerDigitalLighting = composerDigitalLighting.filter { ["tint", "vibrance", "highlights", "shadows"].contains($0.key) && $0.value.value.isFinite }
         value.blurRadius = clamp(blurRadius, 0...60, 18)
         value.maskSmoothing = clamp(maskSmoothing, 0...0.85, 0.35)
         value.composerExposure = composerExposure?.validated
@@ -171,6 +193,7 @@ public struct CameraSettings: Codable, Equatable, Sendable {
         value.toneSync = clamp(toneSync, 0...1, 0)
         value.toneSyncWarmth = clamp(toneSyncWarmth, 0...1, 0.5)
         value.pixelate = clamp(pixelate, 0...80, 0)
+        if let level=composerPixelateLevel { value.composerPixelateLevel=min(4,max(-1,level)) }
         value.photoFilterIntensity = clamp(photoFilterIntensity, 0...1, 1)
         value.zoom = clamp(zoom, 1...3, 1)
         value.focusPosition = clamp(focusPosition, 0...1, 0.5)
@@ -212,11 +235,30 @@ public struct ComposerContrastAdjustment: Codable, Equatable, Sendable {
 public enum PhotoFilter: String, Codable, CaseIterable, Sendable {
     case chrome, fade, instant, mono, noir, process, tonal, transfer
     case g1, d1, q1, x1, s1
-    public var title: String { rawValue.count == 2 ? rawValue.uppercased() : rawValue.capitalized }
+    public var title: String { composerIdentity }
+    /// Names in the shipped *_pipeline.json resources and selected String.
+    public var composerIdentity: String {
+        switch self {
+        case .chrome: return "C1"
+        case .fade: return "F1"
+        case .instant: return "I2"
+        case .mono: return "M1"
+        case .noir: return "N2"
+        case .process: return "P1"
+        case .tonal: return "T1"
+        case .transfer: return "T2"
+        default: return rawValue.uppercased()
+        }
+    }
+    public init?(composerIdentity: String) {
+        guard let value = Self.allCases.first(where: { $0.composerIdentity == composerIdentity }) else { return nil }
+        self = value
+    }
+
     public var coreImageName: String? {
         switch self {
         case .g1, .d1, .q1, .x1, .s1: return nil
-        default: return "CIPhotoEffect" + title
+        default: return "CIPhotoEffect" + rawValue.capitalized
         }
     }
 }

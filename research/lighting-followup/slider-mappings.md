@@ -15,3 +15,27 @@ Opal Studio historically stores highlights neutral as1. Its importer should ther
 Native UVC setup `0x100019078` checks supported dimensions and falls back to1080p if absent. It calls format helper `0x10001b384` at `0x10001915c`, BEFORE session setup `0x10001bc68` at `0x100019284`. The helper picks the first format with exact width and height and writes activeFormat at `0x10001b820`; it does not rank pixel subtype, field of view, or frame rates. New session allocation occurs `0x10001bd9c` through `0x10001bdc8`; session preset follows through helper `0x10001b97c`.
 
 CameraEngine now mirrors explicit first exact-format selection before fresh session creation and leaves activeVideoMin/MaxFrameDuration untouched. It uses first1080p as sensor fallback for unavailable dimensions, while retaining its explicit refusal to upscale unsupported higher output requests. Earlier comments claiming Composer only selects a preset were incomplete: the UVC helper performs the preceding activeFormat write.
+
+# Final zoom and bokeh bounds
+
+Zoom constructor0x10024d1e0…1f0 loads VM0x100673f70=(0,0.375) and
+VM0x100673f80=(0,0.00375): raw0…0.375, reset0, step0.00375.
+Main0x1000199dc converts rawDouble→Float unchanged before setZoomAmount.
+Mainlabel0x100019a1c…44 computes abs(raw)/0.375*1.5+1 =1+4raw.
+XPCsetter0x10001e718…738 converts that Float→Double and stores
+ZoomFilter.adjustedPadding at+0x18 without scaling. ZoomFilter0x1000102f8…310
+computes physical crop factor1+1.5raw and divides width/height by it.
+Consequently native displayed2.5x corresponds to physical1.5625x: the display
+and crop scales deliberately differ. CameraSettings.zoom remains the physical
+factor; zoomDisplay now exposes native labels. The UI writes physical1…1.5625
+in steps0.005625. Older saved out-of-range crop factors are retained until edited.
+The codec physicalfactor mapping remains1+1.5raw; earlier assumption that raw
+UI allowed0…1 was corrected, not the proven rendering equation.
+
+Bokeh constructor0x10024ccf4…cd08 loads VM0x100673f50=(0,11) and
+VM0x100673f60=(0,0.11): raw0…11, reset0, step0.11. BokehChange's initial
+PublishedBool istrue at0x1000889ac…9c4. Its initial PublishedDouble is7.6
+(bitpattern0x401e666666666666) at0x1000889e8…8a04. The reset path0x10008959c…5e8
+and decoder fallback0x100089994…9a0 independently confirm7.6. Fresh Studio
+settings now use native7.6; old saved documents lacking composerBokehRadius
+continue decodingnil to retain their legacy rendering until explicit migration.

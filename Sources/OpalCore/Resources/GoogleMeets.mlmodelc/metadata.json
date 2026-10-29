@@ -1,0 +1,73 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "storagePrecision" : "Float32",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32)",
+        "shortDescription" : "",
+        "shape" : "[]",
+        "name" : "segment",
+        "type" : "MultiArray"
+      }
+    ],
+    "version" : "1.0",
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 5,
+    "computePrecision" : "Float16",
+    "isUpdatable" : "0",
+    "availability" : {
+      "macOS" : "11.0",
+      "tvOS" : "14.0",
+      "visionOS" : "1.0",
+      "watchOS" : "7.0",
+      "iOS" : "14.0",
+      "macCatalyst" : "14.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_neuralNetwork"
+    },
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.version" : "6.0",
+      "com.github.apple.coremltools.source" : "tensorflow==2.12.0"
+    },
+    "inputSchema" : [
+      {
+        "height" : "144",
+        "colorspace" : "RGB",
+        "isOptional" : "0",
+        "width" : "256",
+        "isColor" : "1",
+        "formattedType" : "Image (Color 256 × 144)",
+        "hasSizeFlexibility" : "0",
+        "type" : "Image",
+        "shortDescription" : "",
+        "name" : "input_1"
+      }
+    ],
+    "generatedClassName" : "GoogleMeets",
+    "neuralNetworkLayerTypeHistogram" : {
+      "PoolingAverage" : 10,
+      "Concat" : 3,
+      "UnaryThreshold" : 21,
+      "Convolution" : 42,
+      "ActivationSigmoid" : 10,
+      "ReshapeStatic" : 30,
+      "LoadConstantND" : 12,
+      "Transpose" : 7,
+      "UpsampleBiLinear" : 3,
+      "Deconvolution" : 1,
+      "Add" : 33,
+      "Multiply" : 32,
+      "ActivationLinear" : 42,
+      "ActivationReLU" : 30,
+      "BatchedMatmul" : 12
+    },
+    "method" : "predict"
+  }
+]

@@ -373,11 +373,11 @@ public final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataO
                     output.setSampleBufferDelegate(self, queue: self.processingQueue)
                     guard session.canAddOutput(output) else { throw CaptureError.noOutput }
                     session.addOutput(output)
-                    // Preserve native bi-planar camera buffers and avoid an AVFoundation
-                    // CPU/GPU conversion to four-byte BGRA before the effects render.
+                    // Composer's UVC settings request420v (0x10001bba8).
+                    // Preserve raw planes for its unexpanded-range709 matrix.
                     let available = output.availableVideoPixelFormatTypes
-                    let pixelFormat = [kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-                                       kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                    let pixelFormat = [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                       kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
                                        kCVPixelFormatType_32BGRA].first(where: available.contains) ?? kCVPixelFormatType_32BGRA
                     output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
                                             kCVPixelBufferWidthKey as String: resolution.width,

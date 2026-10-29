@@ -63,6 +63,7 @@ final class StudioModel: ObservableObject {
     private var lastRequestedSaturation: String?
     private var lastRequestedFocus: String?
     private var lastRequestedWhiteBalance: String?
+    private var whiteBalanceCalibration = ComposerWhiteBalanceCalibration()
     init() {
         if let selected = defaults.string(forKey: "selectedCameraID"), !selected.isEmpty { camera.selectedDeviceID = selected }
         automaticResolution = defaults.bool(forKey: "video.automaticResolution")
@@ -97,6 +98,21 @@ final class StudioModel: ObservableObject {
             presets[index].settings = restored
             if presets[index].id == selectedPreset,
                let current = try? ComposerPresetCodec.restoringMappedEffects(settings: camera.settings, archive: archive) {
+                defaults.set(try? JSONEncoder().encode(camera.settings), forKey: key + ".currentBackup")
+                camera.settings = current
+            }
+            defaults.set(true, forKey: key)
+        }
+        // Recover the newly proven Touch Up / Pixelate fields once, without
+        // overwriting a nonzero effect the user adjusted in an earlier build.
+        for index in presets.indices {
+            let key = "composer.effectRestore.v2.\(presets[index].id.uuidString)"
+            guard !defaults.bool(forKey: key), let archive = presets[index].composerArchive,
+                  let restored = try? ComposerPresetCodec.migratingNewlyMappedEffects(settings: presets[index].settings, archive: archive) else { continue }
+            defaults.set(try? JSONEncoder().encode(presets[index]), forKey: key + ".backup")
+            presets[index].settings = restored
+            if presets[index].id == selectedPreset,
+               let current = try? ComposerPresetCodec.migratingNewlyMappedEffects(settings: camera.settings, archive: archive) {
                 defaults.set(try? JSONEncoder().encode(camera.settings), forKey: key + ".currentBackup")
                 camera.settings = current
             }
@@ -168,18 +184,28 @@ final class StudioModel: ObservableObject {
         stockFocus.onWhiteBalanceApplied = { [weak self] kelvin, automatic in
             guard let self else { return }
             self.camera.setHardwareWhiteBalanceApplied(!automatic)
-            if !automatic, self.camera.settings.lightingEnabled {
-                var settings = self.camera.settings
+            var settings = self.camera.settings
+            if !automatic, settings.lightingEnabled {
                 settings.composerWhiteBalance = .init(value: kelvin, automatic: false, enabled: true)
                 settings.warmth = 0
                 settings.manualLightingFields.insert("warmth")
-                if settings != self.camera.settings { self.camera.settings = settings }
             }
+            // Native DeviceInfo.hasWhiteBalanceChanged triggers this same
+            // reload. Wait for verified hardware completion, so startup cannot
+            // retain a face calibration from the camera's previous WB setting.
+            if self.whiteBalanceCalibration.didApply(kelvin: kelvin, automatic: automatic) {
+                settings.toneSyncCalibrationRevision &+= 1
+            }
+            if settings != self.camera.settings { self.camera.settings = settings }
         }
         stockFocus.$whiteBalanceAvailable.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] available in
             guard let self else { return }
             self.camera.setExternalWhiteBalanceManagement(available)
-            guard available else { self.camera.setHardwareWhiteBalanceApplied(false); return }
+            guard available else {
+                self.camera.setHardwareWhiteBalanceApplied(false)
+                self.whiteBalanceCalibration.reset()
+                return
+            }
             self.lastRequestedWhiteBalance = nil
             self.applyStockWhiteBalanceSettings()
         }.store(in: &subscriptions)

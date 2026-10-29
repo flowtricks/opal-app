@@ -27,3 +27,7 @@ Read-only hardware snapshot after quitting Composer: lens142/manual, WB4250/manu
 ## User acceptance and startup
 
 After testing the installed build17, the user reported “it looks great now” and requested a GitHub release and reusable DMG. This is live visual acceptance of the tested build, not a measurement of every camera/client combination. Camera plug-in launch was restored through General settings; launchctl confirmed a running helper with parent bundle version17. Login launch remained enabled. Current user-adjusted settings were preserved.
+
+## DMG distribution checkpoint
+
+The signed pre-notarization DMG candidate was built, verified with hdiutil, mounted read-only, and checked for build17, deep app signature validity, and the Applications shortcut. It is local at build/Opal-Studio-build17-pre-notarization.dmg. Final packaging script requires a stapled notarized app and Gatekeeper acceptance. Apple upload still fails at IDEDistributionUploadAccountStep with “No Accounts”; a user account refresh was requested. No new GitHub binary release is published until that succeeds.

@@ -23,3 +23,7 @@ Focused hue checks passed23 tests before the final integrated run. Additional im
 All126 OpalCore and10 CameraBridge tests passed (`build/build17-integrated-tests.log`). The universal archive and Developer ID export succeeded. Build17 was installed at `/Applications/Opal Studio.app`, with the previous app preserved in a timestamped build backup. It is signed but not notarized. The C1 preview started and the user began testing the sliders. Live matched-settings acceptance is still pending; user changes to zoom, bokeh and focus were observed, so no equality claim is made from those changing frames.
 
 Read-only hardware snapshot after quitting Composer: lens142/manual, WB4250/manual, exposure register12 (Composer−3), saturation register60 (Composer2). The diagnostic now reports these fields without writing controls. Plug-in launching still needs to be restored when the user releases the controls.
+
+## User acceptance and startup
+
+After testing the installed build17, the user reported “it looks great now” and requested a GitHub release and reusable DMG. This is live visual acceptance of the tested build, not a measurement of every camera/client combination. Camera plug-in launch was restored through General settings; launchctl confirmed a running helper with parent bundle version17. Login launch remained enabled. Current user-adjusted settings were preserved.

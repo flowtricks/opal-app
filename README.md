@@ -36,7 +36,7 @@ scripts/package-release.sh
 
 Sign in to Xcode with the development team's account first. The scripts use Developer ID Application signing, hardened runtime, automatic distribution provisioning, and Xcode's notarization service. No passwords, private keys, signing profiles, camera recordings, or local reverse-engineering databases are committed. Packaging requires successful signature verification, an Apple notarization ticket, Gatekeeper acceptance, and both CPU architectures in all three executables.
 
-The team is `G766RX9X84`. App groups and the camera extension's Mach service prefix must match. `build/Notarized/OpalStudio.app` is the notarized export; the portable ZIP and SHA-256 checksum are written to `dist/`. Raw local research evidence referenced by the written audits is intentionally not included in Git.
+The team is `G766RX9X84`. App groups and the camera extension's Mach service prefix must match. `build/notarized-app-path.txt` records the verified notarized export location; the portable ZIP and SHA-256 checksum are written to `dist/`. Raw local research evidence referenced by the written audits is intentionally not included in Git.
 
 For development with the experimental DepthAI backend only, run `scripts/build-c1-backend.sh`, then `python3 scripts/generate-xcode-project.py` without the distribution flag and build ARM64. This backend is not needed for stock-C1 optical focus. For a preview-only build, `scripts/build-preview.sh` omits the restricted extension-install entitlement and cannot install a virtual camera.
 

@@ -20,7 +20,7 @@ The default input uses the camera's stock UVC mode. **C1 sensor controls is expe
 
 Download the universal DMG from the private [GitHub releases](https://github.com/flowtricks/opal-app/releases), open it, drag Opal Studio to Applications, and eject the disk image before launching the app. A ZIP is also available. The app requires macOS 14 or later. Developer ID distribution does not require registering each laptop with Apple.
 
-The accepted, notarized build is [0.1.0 (18)](https://github.com/flowtricks/opal-app/releases/tag/v0.1.0-build18), the first build with private auto-updates.
+The accepted, notarized build is [0.1.0 (19)](https://github.com/flowtricks/opal-app/releases/tag/v0.1.0-build19), the first build with private auto-updates.
 
 Each Mac must grant camera/microphone access as needed and approve **Opal Studio Camera** in System Settings → General → Login Items & Extensions → Camera Extensions. Set login and camera-plug-in launch preferences in Settings → General. Avoid leaving Composer's own camera connection active at the same time.
 

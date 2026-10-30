@@ -228,7 +228,9 @@ final class StudioModel: ObservableObject {
         camera.onFrame = { [weak self] frame, time in
             guard let self else { return }
             let outgoing = self.loop.process(frame, at: time)
-            self.previewRenderer.enqueue(outgoing)
+            // While a loop plays, the preview shows the live camera with the loop
+            // ghosted over it; calls and recordings still receive only the loop.
+            self.previewRenderer.enqueue(frame, overlay: outgoing === frame ? nil : outgoing)
             self.presetPreview.enqueue(outgoing)
             self.bridge.send(outgoing, presentationTime: time)
             self.recordingCapture.appendCamera(outgoing, time: time)

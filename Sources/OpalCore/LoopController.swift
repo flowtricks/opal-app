@@ -5,6 +5,8 @@ import Foundation
 
 /// Records a short, processed video loop and substitutes it into the outgoing
 /// camera stream. It never retains an array of full-resolution video frames.
+/// After recording, a forward-then-reverse "boomerang" file is built in the
+/// background so playback has no visible jump at the loop boundary.
 /// Call process on the camera output queue; UI methods are main-thread methods.
 public final class LoopController: ObservableObject {
     @Published public private(set) var isRecording = false
@@ -18,6 +20,7 @@ public final class LoopController: ObservableObject {
     private let lock = NSLock()
     private let recorderQueue: DispatchQueue
     private let decoderQueue: DispatchQueue
+    private let boomerangQueue = DispatchQueue(label: "app.opal.loop.boomerang", qos: .utility)
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let directory: URL
     private var recordingPreparing = false
@@ -31,6 +34,11 @@ public final class LoopController: ObservableObject {
     private var loopURL: URL?
     private var duration = 0.0
     private var playbackAnchor: CMTime?
+    private var playbackOffset = 0.0
+    private var boomerangURL: URL?
+    private var boomerangDuration = 0.0
+    private var awaitingBoomerang = false
+    private var boomerangFailed = false
     private var latestPlaybackFrame: CVPixelBuffer?
     private var loopPosterFrame: CVPixelBuffer?
     private var loopPosterPreview: CGImage?
@@ -50,6 +58,7 @@ public final class LoopController: ObservableObject {
     // Decoder queue only.
     private var reader: AVAssetReader?
     private var readerOutput: AVAssetReaderTrackOutput?
+    private var readerURL: URL?
     private var pendingSample: CMSampleBuffer?
     private var previousPlaybackTime = -1.0
     private var previewCounter = 0
@@ -86,11 +95,20 @@ public final class LoopController: ObservableObject {
         var playbackURL: URL?
         if playing, !playbackFailed, duration > 0, !decodingPending, let url = loopURL {
             if playbackAnchor == nil { playbackAnchor = time }
-            let elapsed = max(0, CMTimeSubtract(time, playbackAnchor!).seconds)
+            let elapsed = playbackOffset + max(0, CMTimeSubtract(time, playbackAnchor!).seconds)
             if elapsed.isFinite {
-                targetTime = elapsed.truncatingRemainder(dividingBy: duration)
-                playbackURL = url
-                decodingPending = true
+                if let boomerangURL, boomerangDuration > 0 {
+                    targetTime = elapsed.truncatingRemainder(dividingBy: boomerangDuration)
+                    playbackURL = boomerangURL
+                } else if boomerangFailed || elapsed < duration {
+                    targetTime = elapsed.truncatingRemainder(dividingBy: duration)
+                    playbackURL = url
+                } else {
+                    // The reverse half is still being built. Hold the final forward
+                    // frame rather than jumping back to the first one.
+                    awaitingBoomerang = true
+                }
+                if playbackURL != nil { decodingPending = true }
             }
         }
         lock.unlock()
@@ -112,6 +130,7 @@ public final class LoopController: ObservableObject {
         let currentGeneration = generation
         recordingPreparing = true; recordingPending = false; decodingPending = false
         playing = false; playbackFailed = false; latestPlaybackFrame = nil; playbackAnchor = nil
+        playbackOffset = 0; awaitingBoomerang = false
         maximumDuration = maxDuration.isFinite ? min(10, max(1, maxDuration)) : 3
         lock.unlock()
         isPlaying = false; isRecording = true; preview = nil; recordedDuration = 0
@@ -162,13 +181,15 @@ public final class LoopController: ObservableObject {
         generation &+= 1
         let currentGeneration = generation
         playing = true; playbackFailed = false; playbackAnchor = nil; latestPlaybackFrame = nil; decodingPending = true
+        playbackOffset = 0; awaitingBoomerang = false
+        let startURL = boomerangURL ?? url
         let poster = loopPosterPreview
         lock.unlock()
         isPlaying = true; preview = poster; status = "Loop playing"
         decoderQueue.async { [weak self] in
             guard let self, self.isCurrent(currentGeneration) else { return }
             self.resetDecoder()
-            self.decode(at: 0, url: url, generation: currentGeneration)
+            self.decode(at: 0, url: startURL, generation: currentGeneration)
         }
     }
 
@@ -177,6 +198,7 @@ public final class LoopController: ObservableObject {
         if playing { generation &+= 1 }
         let currentGeneration = generation
         playing = false; playbackFailed = false; decodingPending = false; playbackAnchor = nil; latestPlaybackFrame = nil
+        playbackOffset = 0; awaitingBoomerang = false
         lock.unlock()
         isPlaying = false; preview = nil
         if !isRecording && !isFinalizing { status = hasLoop ? "Loop ready" : "Record a short loop" }
@@ -192,6 +214,7 @@ public final class LoopController: ObservableObject {
         recordingPending = false; decodingPending = false; playbackFailed = false
         finalizing = false; loopURL = nil; duration = 0; latestPlaybackFrame = nil; playbackAnchor = nil
         loopPosterFrame = nil; loopPosterPreview = nil
+        boomerangURL = nil; boomerangDuration = 0; boomerangFailed = false; playbackOffset = 0; awaitingBoomerang = false
         lock.unlock()
         isRecording = false; isFinalizing = false; isPlaying = false; hasLoop = false
         recordedDuration = 0; preview = nil; status = "Record a short loop"
@@ -287,11 +310,14 @@ public final class LoopController: ObservableObject {
                 let posterImage = self.context.createCGImage(CIImage(cvPixelBuffer: firstFrame), from: CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(firstFrame), height: CVPixelBufferGetHeight(firstFrame)))
                 self.lock.lock()
                 guard self.generation == generation else { self.lock.unlock(); return }
-                let oldURL = self.loopURL
+                let oldURL = self.loopURL, oldBoomerang = self.boomerangURL
                 self.loopPosterFrame = firstFrame; self.loopPosterPreview = posterImage
                 self.loopURL = url; self.duration = duration; self.finalizing = false; self.recordingRequested = false
+                self.boomerangURL = nil; self.boomerangDuration = 0; self.boomerangFailed = false
                 self.lock.unlock()
                 if let oldURL, oldURL != url { try? FileManager.default.removeItem(at: oldURL) }
+                if let oldBoomerang { try? FileManager.default.removeItem(at: oldBoomerang) }
+                self.boomerangQueue.async { [weak self] in self?.buildBoomerang(from: url) }
                 self.writer = nil; self.writerInput = nil; self.adaptor = nil; self.recordingFirstFrame = nil
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrent(generation) else { return }
@@ -303,7 +329,7 @@ public final class LoopController: ObservableObject {
     }
 
     private func resetDecoder() {
-        reader?.cancelReading(); reader = nil; readerOutput = nil; pendingSample = nil
+        reader?.cancelReading(); reader = nil; readerOutput = nil; readerURL = nil; pendingSample = nil
         previousPlaybackTime = -1; previewCounter = 0
     }
 
@@ -312,7 +338,7 @@ public final class LoopController: ObservableObject {
         lock.lock(); let active = playing && self.generation == generation; lock.unlock()
         guard active else { return }
         do {
-            if reader == nil || target < previousPlaybackTime {
+            if reader == nil || readerURL != url || target < previousPlaybackTime {
                 reader?.cancelReading()
                 let asset = AVURLAsset(url: url)
                 guard let track = asset.tracks(withMediaType: .video).first else { throw LoopError.noFrames }
@@ -323,7 +349,7 @@ public final class LoopController: ObservableObject {
                 guard newReader.canAdd(output) else { throw LoopError.decoderUnavailable }
                 newReader.add(output)
                 guard newReader.startReading() else { throw newReader.error ?? LoopError.decoderUnavailable }
-                reader = newReader; readerOutput = output; pendingSample = output.copyNextSampleBuffer()
+                reader = newReader; readerOutput = output; readerURL = url; pendingSample = output.copyNextSampleBuffer()
             }
             previousPlaybackTime = target
             var chosen: CVPixelBuffer?
@@ -348,6 +374,101 @@ public final class LoopController: ObservableObject {
                 }
             }
         } catch { report(error, generation: generation) }
+    }
+
+    /// Writes the recording forward, then in reverse without repeating either
+    /// end frame. Reverse frames are decoded in short chunks from the nearest
+    /// keyframe, so at most `chunk` decoded frames are held at once.
+    private func buildBoomerang(from source: URL) {
+        func current() -> Bool { lock.lock(); defer { lock.unlock() }; return loopURL == source }
+        guard current() else { return }
+        let output = source.deletingPathExtension().appendingPathExtension("boomerang.mov")
+        let asset = AVURLAsset(url: source)
+        guard let track = asset.tracks(withMediaType: .video).first else { return }
+        var writer: AVAssetWriter?, input: AVAssetWriterInput?, adaptor: AVAssetWriterInputPixelBufferAdaptor?
+        func append(_ buffer: CVPixelBuffer, at time: CMTime) throws {
+            if writer == nil {
+                let newWriter = try AVAssetWriter(outputURL: output, fileType: .mov)
+                let newInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+                    AVVideoCodecKey: AVVideoCodecType.h264,
+                    AVVideoWidthKey: CVPixelBufferGetWidth(buffer),
+                    AVVideoHeightKey: CVPixelBufferGetHeight(buffer),
+                    AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 6_000_000,
+                                                       AVVideoExpectedSourceFrameRateKey: 30,
+                                                       AVVideoMaxKeyFrameIntervalKey: 30]
+                ])
+                guard newWriter.canAdd(newInput) else { throw LoopError.encoderUnavailable }
+                newWriter.add(newInput)
+                let newAdaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: newInput, sourcePixelBufferAttributes: nil)
+                guard newWriter.startWriting() else { throw newWriter.error ?? LoopError.encoderUnavailable }
+                newWriter.startSession(atSourceTime: .zero)
+                writer = newWriter; input = newInput; adaptor = newAdaptor
+            }
+            while input?.isReadyForMoreMediaData == false {
+                guard current() else { throw CancellationError() }
+                usleep(2_000)
+            }
+            guard adaptor?.append(buffer, withPresentationTime: time) == true else { throw writer?.error ?? LoopError.encoderUnavailable }
+        }
+        func frames(in range: CMTimeRange?, _ body: (CMTime, CVPixelBuffer) throws -> Void) throws {
+            let reader = try AVAssetReader(asset: asset)
+            if let range { reader.timeRange = range }
+            let trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                                                                                     kCVPixelBufferIOSurfacePropertiesKey as String: [:]])
+            trackOutput.alwaysCopiesSampleData = false
+            guard reader.canAdd(trackOutput) else { throw LoopError.decoderUnavailable }
+            reader.add(trackOutput)
+            guard reader.startReading() else { throw reader.error ?? LoopError.decoderUnavailable }
+            defer { reader.cancelReading() }
+            while let sample = trackOutput.copyNextSampleBuffer() {
+                guard current() else { throw CancellationError() }
+                if let frame = CMSampleBufferGetImageBuffer(sample) { try body(CMSampleBufferGetPresentationTimeStamp(sample), frame) }
+            }
+            if reader.status == .failed { throw reader.error ?? LoopError.decoderUnavailable }
+        }
+        do {
+            var times: [CMTime] = []
+            try frames(in: nil) { time, frame in try append(frame, at: time); times.append(time) }
+            guard times.count >= 3, let last = times.last else { throw LoopError.noFrames }
+            let mirror = CMTimeMultiply(last, multiplier: 2)
+            let chunk = 8
+            var high = times.count - 2
+            while high >= 1 {
+                let low = max(1, high - chunk + 1)
+                let range = CMTimeRange(start: times[low], end: CMTimeAdd(times[high], CMTime(value: 1, timescale: 600)))
+                var decoded: [(CMTime, CVPixelBuffer)] = []
+                try frames(in: range) { time, frame in
+                    if time >= times[low] && time <= times[high] { decoded.append((time, frame)) }
+                }
+                for (time, frame) in decoded.reversed() { try append(frame, at: CMTimeSubtract(mirror, time)) }
+                high = low - 1
+            }
+            guard let writer else { throw LoopError.encoderUnavailable }
+            input?.markAsFinished()
+            writer.endSession(atSourceTime: mirror)
+            let done = DispatchSemaphore(value: 0)
+            writer.finishWriting { done.signal() }
+            done.wait()
+            guard writer.status == .completed else { throw writer.error ?? LoopError.encoderUnavailable }
+            lock.lock()
+            guard loopURL == source else { lock.unlock(); try? FileManager.default.removeItem(at: output); return }
+            boomerangURL = output; boomerangDuration = mirror.seconds
+            if awaitingBoomerang {
+                // Resume exactly where the reverse half begins.
+                awaitingBoomerang = false; playbackAnchor = nil; playbackOffset = duration
+            }
+            lock.unlock()
+        } catch {
+            // Without a boomerang, playback simply keeps the forward loop.
+            writer?.cancelWriting()
+            try? FileManager.default.removeItem(at: output)
+            lock.lock()
+            if loopURL == source {
+                boomerangFailed = true
+                if awaitingBoomerang { awaitingBoomerang = false; playbackAnchor = nil; playbackOffset = 0 }
+            }
+            lock.unlock()
+        }
     }
 
     private func report(_ error: Error, generation: UInt64) {

@@ -14,6 +14,7 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     private let lock = NSLock()
     private weak var view: MTKView?
     private var latestFrame: CVPixelBuffer?
+    private var latestOverlay: CVPixelBuffer?
     private var generation: UInt64 = 1
     private var submittedGeneration: UInt64 = 0
     private var submittedSize = CGSize.zero
@@ -35,9 +36,12 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         super.init()
     }
 
-    func enqueue(_ buffer: CVPixelBuffer) {
+    /// overlay is drawn over buffer at 50% opacity, e.g. a playing loop over
+    /// the live camera so the person can line themselves back up.
+    func enqueue(_ buffer: CVPixelBuffer, overlay: CVPixelBuffer? = nil) {
         lock.lock()
         latestFrame = buffer
+        latestOverlay = overlay
         generation &+= 1
         lock.unlock()
         requestDisplay()
@@ -46,6 +50,7 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     func clear() {
         lock.lock()
         latestFrame = nil
+        latestOverlay = nil
         generation &+= 1
         lock.unlock()
         requestDisplay()
@@ -115,23 +120,18 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
             redrawNeeded = true; lock.unlock(); return
         }
         let buffer = latestFrame
+        let overlay = latestOverlay
         let currentGeneration = generation
         lock.unlock()
         guard let drawable = view.currentDrawable, let commandBuffer = commandQueue.makeCommandBuffer() else { return }
         let bounds = CGRect(x: 0, y: 0, width: drawable.texture.width, height: drawable.texture.height)
         let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 1)).cropped(to: bounds)
         var image = black
-        if let buffer {
-            let source = CIImage(cvPixelBuffer: buffer)
-            let extent = source.extent
-            if extent.width > 0, extent.height > 0, !extent.isInfinite {
-                let scale = min(bounds.width / extent.width, bounds.height / extent.height)
-                let fitted = source
-                    .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
-                    .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-                    .transformed(by: CGAffineTransform(translationX: (bounds.width - extent.width * scale) / 2,
-                                                       y: (bounds.height - extent.height * scale) / 2))
-                image = fitted.composited(over: black).cropped(to: bounds)
+        if let buffer, let fitted = fit(buffer, in: bounds) {
+            image = fitted.composited(over: black).cropped(to: bounds)
+            if let overlay, let ghost = fit(overlay, in: bounds) {
+                let halfOpacity = ghost.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0.5)])
+                image = halfOpacity.composited(over: image).cropped(to: bounds)
             }
         }
         lock.lock()
@@ -143,10 +143,10 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         commandBuffer.label = "Opal Studio latest-frame preview"
         context.render(image, to: drawable.texture, commandBuffer: commandBuffer, bounds: bounds, colorSpace: outputColorSpace)
         commandBuffer.present(drawable)
-        commandBuffer.addCompletedHandler { [weak self, buffer] _ in
+        commandBuffer.addCompletedHandler { [weak self, buffer, overlay] _ in
             // Core Image encodes asynchronously. Retain the exact immutable
-            // capture buffer until this command has finished reading it.
-            withExtendedLifetime(buffer) {}
+            // capture buffers until this command has finished reading them.
+            withExtendedLifetime((buffer, overlay)) {}
             guard let self else { return }
             self.lock.lock()
             self.inFlight -= 1
@@ -155,6 +155,18 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
             if needsNext { self.requestDisplay() }
         }
         commandBuffer.commit()
+    }
+
+    private func fit(_ buffer: CVPixelBuffer, in bounds: CGRect) -> CIImage? {
+        let source = CIImage(cvPixelBuffer: buffer)
+        let extent = source.extent
+        guard extent.width > 0, extent.height > 0, !extent.isInfinite else { return nil }
+        let scale = min(bounds.width / extent.width, bounds.height / extent.height)
+        return source
+            .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .transformed(by: CGAffineTransform(translationX: (bounds.width - extent.width * scale) / 2,
+                                               y: (bounds.height - extent.height * scale) / 2))
     }
 }
 

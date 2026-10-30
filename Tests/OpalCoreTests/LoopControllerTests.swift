@@ -31,7 +31,8 @@ final class LoopControllerTests: XCTestCase {
         var output = blue
         var seenRed = false, seenGreen = false
         var transitions = 0, previousWasRed: Bool?
-        for index in 60..<135 {
+        // Boomerang playback changes scene twice per 2-second cycle.
+        for index in 60..<170 {
             output = loop.process(blue, at: CMTime(value: Int64(index), timescale: 30))
             try await Task.sleep(nanoseconds: 35_000_000)
             if index > 62 {
@@ -52,6 +53,42 @@ final class LoopControllerTests: XCTestCase {
         XCTAssertFalse(loop.hasLoop)
         XCTAssertFalse(loop.isPlaying)
         XCTAssertTrue(loop.process(blue, at: CMTime(value: 100, timescale: 30)) === blue)
+    }
+
+    @MainActor
+    func testPlaybackReversesInsteadOfJumpingToTheStart() async throws {
+        let loop = LoopController()
+        let ramp = try (0..<30).map { try makeFrame(red: UInt8(20 + $0 * 7), blue: 10) }
+        let blue = try makeFrame(red: 10, blue: 220)
+        loop.startRecording(maxDuration: 1)
+        for _ in 0..<100 {
+            if loop.isRecording { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        for index in 0..<35 {
+            _ = loop.process(ramp[min(index, 29)], at: CMTime(value: Int64(index), timescale: 30))
+            try await Task.sleep(nanoseconds: 35_000_000)
+        }
+        for _ in 0..<200 {
+            if loop.hasLoop { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(loop.hasLoop, loop.status)
+        loop.play()
+        var values: [Int] = []
+        for index in 0..<150 {
+            let output = loop.process(blue, at: CMTime(value: Int64(index), timescale: 30))
+            try await Task.sleep(nanoseconds: 35_000_000)
+            guard index > 2 else { continue }
+            CVPixelBufferLockBaseAddress(output, .readOnly)
+            values.append(Int(CVPixelBufferGetBaseAddress(output)!.assumingMemoryBound(to: UInt8.self)[2]))
+            CVPixelBufferUnlockBaseAddress(output, .readOnly)
+        }
+        let largestStep = zip(values, values.dropFirst()).map { abs($0 - $1) }.max() ?? 0
+        XCTAssertLessThan(largestStep, 60, "Boomerang playback must never jump from the last frame to the first: \(values)")
+        XCTAssertTrue(zip(values, values.dropFirst()).contains { $1 < $0 - 3 }, "Playback must run in reverse: \(values)")
+        XCTAssertTrue(zip(values, values.dropFirst()).contains { $1 > $0 + 3 }, "Playback must run forward: \(values)")
+        loop.clear()
     }
 
     @MainActor

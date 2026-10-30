@@ -114,8 +114,13 @@ struct ComposerView: View {
         .onReceive(NotificationCenter.default.publisher(for: StudioViewCommand.zebras)) { _ in showZebras.toggle() }
         .onReceive(NotificationCenter.default.publisher(for: StudioViewCommand.settings)) { _ in openWindow(id: "settings") }
         .onReceive(NotificationCenter.default.publisher(for: StudioViewCommand.advancedSettings)) { _ in showSettings = true }
-        .sheet(isPresented: $showSettings) { ScrollView { settingsPanel.padding(24) }.frame(width: 580, height: 680)
-            .sheet(isPresented: $showDiagnostics) { ScrollView { diagnostics.padding(28) }.frame(width: 560, height: 700) }
+        .sheet(isPresented: $showSettings) {
+            AdvancedSheet(title: "Advanced", subtitle: "Image tuning, virtual camera and troubleshooting", close: { showSettings = false }) { settingsPanel }
+                .frame(width: 600, height: 700)
+                .sheet(isPresented: $showDiagnostics) {
+                    AdvancedSheet(title: "Stream diagnostics", subtitle: nil, close: { showDiagnostics = false }) { diagnostics }
+                        .frame(width: 560, height: 700)
+                }
         }
         .onChange(of: camera.preview) { _, image in if let image, showHistogram || showZebras { analysis.update(image, includeZebra: showZebras) } }
         .onChange(of: showZebras) { _, enabled in if let image = camera.preview { analysis.update(image, includeZebra: enabled) } }
@@ -487,41 +492,80 @@ struct ComposerView: View {
         }.background(Color(white: 0.086)).clipShape(RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.white.opacity(0.12))).padding(.leading, 12).padding(.trailing, 4).padding(.top, 18)
     }
     private var settingsPanel: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack { Text("Advanced").font(.system(size: 20)); Spacer(); Button("Done") { showSettings = false } }
-            Toggle("Mirror video", isOn: setting(\.mirror))
-            slider("Skin warmth", value: setting(\.toneSyncWarmth), range: 0...1, format: "%.2f")
-            Button("Recalibrate skin tone") { camera.settings.toneSyncCalibrationRevision &+= 1 }
-            slider("Mask smoothing", value: setting(\.maskSmoothing), range: 0...0.85, format: "%.2f")
-            slider("Sharpness", value: setting(\.sharpness), range: 0...2, format: "%.2f")
-            Picker("Photo filter", selection: Binding(get: { camera.settings.photoFilter }, set: { camera.settings.photoFilter = $0; camera.settings.photoFiltersEnabled = true; camera.settings.composerUnknownFilter = nil })) { Text("None").tag(nil as PhotoFilter?); ForEach(PhotoFilter.allCases, id: \.self) { Text($0.title).tag(Optional($0)) } }
-            if camera.settings.photoFilter != nil { slider("Filter intensity", value: setting(\.photoFilterIntensity), range: 0...1, format: "%.2f") }
-            Divider()
-            sensorControls
-            Divider()
-            Text("Virtual camera").font(.system(size: 14, weight: .semibold))
-            Text(bridge.status).font(.system(size: 11)).foregroundStyle(.secondary)
-            Button("Install camera extension") { bridge.activate() }.buttonStyle(.borderedProminent).foregroundStyle(.black)
-            Button("Connect virtual camera") { studio.connectVirtualCamera() }.buttonStyle(.bordered)
-            Text("Select Opal Studio Camera in Google Meet, Zoom, or your calling app after the extension is installed.").font(.system(size: 11)).foregroundStyle(.secondary)
-            Divider()
-            Toggle("Include microphone in recordings", isOn: $studio.includeAudio).font(.system(size: 11)).disabled(studio.recording)
-            Text("Presets").font(.system(size: 12, weight: .semibold))
-            Button("Import preset…") { studio.importPreset() }
-            Button("Export current preset…") { studio.exportPreset() }
-            Divider()
-            Button("Stream diagnostics") { showDiagnostics = true }
-            Button(verifier.isRunning ? "Stop output verification" : "Verify virtual-camera output") { if verifier.isRunning { verifier.stop() } else { verifier.start(width: camera.settings.resolution.width, height: camera.settings.resolution.height) } }
-            Text(verifier.status).font(.caption).foregroundStyle(.secondary)
-            Divider()
-            Button(transportTest.isRunning ? "Stop test colors" : "Send test colors for 15 seconds") { if transportTest.isRunning { transportTest.stop() } else { studio.runTransportTest() } }.disabled(studio.recording || studio.cameraBusy)
-            Text(transportTest.status).font(.caption).foregroundStyle(.secondary)
-
-        }.toggleStyle(.switch).controlSize(.small).background(Color(white: 0.133))
+        VStack(alignment: .leading, spacing: 14) {
+            AdvancedCard(title: "Image", icon: "camera.filters") {
+                Toggle("Mirror video", isOn: setting(\.mirror))
+                slider("Skin warmth", value: setting(\.toneSyncWarmth), range: 0...1, format: "%.2f")
+                HStack {
+                    Text("Skin tone calibration").font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                    Spacer()
+                    Button("Recalibrate") { camera.settings.toneSyncCalibrationRevision &+= 1 }.buttonStyle(AdvancedButtonStyle())
+                }
+                slider("Mask smoothing", value: setting(\.maskSmoothing), range: 0...0.85, format: "%.2f")
+                slider("Sharpness", value: setting(\.sharpness), range: 0...2, format: "%.2f")
+                HStack {
+                    Text("Photo filter").font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                    Spacer()
+                    Menu {
+                        Button("None") { setPhotoFilter(nil) }
+                        ForEach(PhotoFilter.allCases, id: \.self) { filter in Button(filter.title) { setPhotoFilter(filter) } }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(camera.settings.photoFilter?.title ?? "None")
+                            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
+                        }.font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+                        .padding(.horizontal, 10).frame(height: 26)
+                        .background(Color(white: 0.2), in: RoundedRectangle(cornerRadius: 5))
+                    }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                }
+                if camera.settings.photoFilter != nil { slider("Filter intensity", value: setting(\.photoFilterIntensity), range: 0...1, format: "%.2f") }
+            }
+            AdvancedCard(title: "Virtual camera", icon: "video.badge.checkmark") {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Circle().fill(bridge.isConnected ? Color.green : Color(white: 0.4)).frame(width: 7, height: 7)
+                    Text(bridge.status).font(.system(size: 11)).foregroundStyle(.white.opacity(0.75)).fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 8) {
+                    Button("Install Camera Extension") { bridge.activate() }.buttonStyle(AdvancedButtonStyle(prominent: true))
+                    Button(bridge.isConnected ? "Reconnect" : "Connect") { studio.connectVirtualCamera() }.buttonStyle(AdvancedButtonStyle())
+                    Button("Camera Extension Settings…") { lifecycle.openLoginItemsSettings() }.buttonStyle(AdvancedButtonStyle())
+                }
+                Text("Install once on each Mac and again after app updates, then turn on Opal Studio Camera in System Settings. Reopen Meet, Zoom or QuickTime and choose Opal Studio Camera.")
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).fixedSize(horizontal: false, vertical: true)
+            }
+            AdvancedCard(title: "Recording & presets", icon: "record.circle") {
+                Toggle("Include microphone in recordings", isOn: $studio.includeAudio).disabled(studio.recording)
+                HStack(spacing: 8) {
+                    Text("Presets").font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                    Spacer()
+                    Button("Import…") { studio.importPreset() }.buttonStyle(AdvancedButtonStyle())
+                    Button("Export Current…") { studio.exportPreset() }.buttonStyle(AdvancedButtonStyle())
+                }
+            }
+            AdvancedCard(title: "Troubleshooting", icon: "stethoscope") {
+                HStack(spacing: 8) {
+                    Button("Stream Diagnostics…") { showDiagnostics = true }.buttonStyle(AdvancedButtonStyle())
+                    Button(verifier.isRunning ? "Stop Output Check" : "Check Virtual-Camera Output") {
+                        if verifier.isRunning { verifier.stop() } else { verifier.start(width: camera.settings.resolution.width, height: camera.settings.resolution.height) }
+                    }.buttonStyle(AdvancedButtonStyle())
+                    Button(transportTest.isRunning ? "Stop Test Colors" : "Send Test Colors") {
+                        if transportTest.isRunning { transportTest.stop() } else { studio.runTransportTest() }
+                    }.buttonStyle(AdvancedButtonStyle()).disabled(studio.recording || studio.cameraBusy)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Output check: \(verifier.status)")
+                    Text("Test colors (15 seconds): \(transportTest.status)")
+                }.font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).fixedSize(horizontal: false, vertical: true)
+            }
+            AdvancedCard(title: "C1 sensor controls", icon: "camera.aperture", badge: "Experimental") { sensorControls }
+        }.toggleStyle(AdvancedSwitchStyle())
+    }
+    private func setPhotoFilter(_ filter: PhotoFilter?) {
+        camera.settings.photoFilter = filter; camera.settings.photoFiltersEnabled = true; camera.settings.composerUnknownFilter = nil
     }
     private var sensorControls: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Toggle("C1 sensor controls", isOn: Binding(get: { studio.useC1Hardware }, set: { studio.setHardwareBackend($0) })).font(.system(size: 12, weight: .semibold)).disabled(!c1.available || !studio.changingFormatAllowed)
+            Toggle("Use direct sensor controls", isOn: Binding(get: { studio.useC1Hardware }, set: { studio.setHardwareBackend($0) })).disabled(!c1.available || !studio.changingFormatAllowed)
             if studio.useC1Hardware {
                 Text(c1.status).font(.caption).foregroundStyle(.secondary)
                 if !c1.isRunning {
@@ -546,7 +590,7 @@ struct ComposerView: View {
                     Text("Off").tag(0); Text("50 Hz").tag(1); Text("60 Hz").tag(2); Text("Auto").tag(3)
                 }
             }
-        }.font(.system(size: 11)).toggleStyle(.checkbox)
+        }.font(.system(size: 11))
     }
     private func sensor<T>(_ key: WritableKeyPath<C1SensorSettings,T>) -> Binding<T> { Binding(get: { c1.settings[keyPath: key] }, set: { c1.settings[keyPath: key] = $0 }) }
     private var histogram: some View {
@@ -556,7 +600,6 @@ struct ComposerView: View {
     }
     private var diagnostics: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack { Text("Stream diagnostics").font(.title2); Spacer(); Button("Done") { showDiagnostics = false } }
             Text("\(camera.settings.resolution.width) × \(camera.settings.resolution.height) · BGRA · 30 fps · host-clock timestamps").font(.caption).foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: 30, verticalSpacing: 10) {
                 stat("Consumer demand", bridge.consumerDemand.map { $0.isActive ? "Streaming" : "Idle" } ?? "Unavailable")
@@ -608,5 +651,76 @@ struct ComposerView: View {
             HStack { Text(title); Spacer(); Text(String(format: format, value.wrappedValue)).monospacedDigit() }
             ComposerSlider(value: value, range: range, colors: colors, gradientStops: stops, center: center, label: title)
         }.font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+    }
+}
+
+/// Sheet with a fixed header so Done is always reachable; Escape also closes.
+private struct AdvancedSheet<Content: View>: View {
+    let title: String
+    let subtitle: String?
+    let close: () -> Void
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.system(size: 17, weight: .semibold)).foregroundStyle(.white)
+                    if let subtitle { Text(subtitle).font(.system(size: 11)).foregroundStyle(.white.opacity(0.45)) }
+                }
+                Spacer()
+                Button("Done", action: close).buttonStyle(AdvancedButtonStyle(prominent: true)).keyboardShortcut(.cancelAction)
+            }.padding(.horizontal, 24).padding(.vertical, 16)
+            Rectangle().fill(.white.opacity(0.08)).frame(height: 1)
+            ScrollView { content().padding(24).frame(maxWidth: .infinity, alignment: .leading) }
+        }.background(Color(white: 0.133)).preferredColorScheme(.dark)
+    }
+}
+
+private struct AdvancedCard<Content: View>: View {
+    let title: String
+    let icon: String
+    var badge: String? = nil
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.system(size: 12)).foregroundStyle(yellow).frame(width: 16)
+                Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                if let badge {
+                    Text(badge).font(.system(size: 9, weight: .semibold)).foregroundStyle(.white.opacity(0.55))
+                        .padding(.horizontal, 6).frame(height: 16).background(Color(white: 0.2), in: Capsule())
+                }
+            }
+            content()
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.086), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.08)))
+    }
+}
+
+private struct AdvancedButtonStyle: ButtonStyle {
+    var prominent = false
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 11, weight: .medium)).lineLimit(1)
+            .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.85))
+            .padding(.horizontal, 12).frame(height: 26)
+            .background(prominent ? yellow : Color(white: 0.2), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(.white.opacity(prominent ? 0 : 0.08)))
+            .opacity(enabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
+            .contentShape(RoundedRectangle(cornerRadius: 5))
+    }
+}
+
+/// Label on the left, the app's yellow switch on the right.
+private struct AdvancedSwitchStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        HStack {
+            configuration.label.font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+            Spacer()
+            Toggle(isOn: configuration.$isOn) { EmptyView() }.labelsHidden().toggleStyle(ComposerSwitchStyle())
+        }.opacity(enabled ? 1 : 0.4)
+            .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label } }
     }
 }

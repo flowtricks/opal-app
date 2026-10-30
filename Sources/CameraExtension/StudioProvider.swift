@@ -68,6 +68,7 @@ final class StudioDevice: NSObject, CMIOExtensionDeviceSource {
         device = CMIOExtensionDevice(localizedName: "Opal Studio Camera", deviceID: Self.id, legacyDeviceID: Self.id.uuidString, source: self)
         let duration = CMTime(value: 1, timescale: 30)
         var streamFormats: [CMIOExtensionStreamFormat] = []
+        var sourceFormats: [CMIOExtensionStreamFormat] = []
         for (width, height) in StreamOutputRenderer.dimensions {
             var format: CMVideoFormatDescription?
             let result = CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCVPixelFormatType_32BGRA,
@@ -75,10 +76,14 @@ final class StudioDevice: NSObject, CMIOExtensionDeviceSource {
             guard result == noErr, let format else { fatalError("Cannot create camera format: \(result)") }
             streamFormats.append(CMIOExtensionStreamFormat(formatDescription: format, maxFrameDuration: duration,
                 minFrameDuration: duration, validFrameDurations: nil))
+            // Published formats carry the same sRGB tags as each rendered frame.
+            guard let tagged = try? StreamOutputRenderer.taggedFormat(width: width, height: height) else { fatalError("Cannot create camera format") }
+            sourceFormats.append(CMIOExtensionStreamFormat(formatDescription: tagged, maxFrameDuration: duration,
+                minFrameDuration: duration, validFrameDurations: nil))
         }
         do { renderer = try StreamOutputRenderer(width: 1280, height: 720) }
         catch { fatalError("Cannot allocate camera renderer: \(error)") }
-        source = StudioStream(owner: self, direction: .source, formats: streamFormats, id: UUID(uuidString: "D02D794D-32DF-4D55-8F92-45DC8B3D7BB1")!)
+        source = StudioStream(owner: self, direction: .source, formats: sourceFormats, id: UUID(uuidString: "D02D794D-32DF-4D55-8F92-45DC8B3D7BB1")!)
         sink = StudioStream(owner: self, direction: .sink, formats: streamFormats, id: UUID(uuidString: "07B20323-B2E4-44C9-BB12-B79B47209EE1")!)
         do { try device.addStream(source.stream); try device.addStream(sink.stream) }
         catch { fatalError("Cannot add camera streams: \(error)") }

@@ -14,7 +14,7 @@ final class StreamOutputRenderer {
     let standby: CVPixelBuffer
     private let pool: CVPixelBufferPool
     private let context: CIContext
-    private let colorSpace = CGColorSpaceCreateDeviceRGB()
+    private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     private let bounds: CGRect
 
     init(width: Int, height: Int) throws {
@@ -22,11 +22,7 @@ final class StreamOutputRenderer {
         bounds = CGRect(x: 0, y: 0, width: width, height: height)
         if let device = MTLCreateSystemDefaultDevice() { context = CIContext(mtlDevice: device, options: [.cacheIntermediates: false]) }
         else { context = CIContext(options: [.cacheIntermediates: false]) }
-        var description: CMVideoFormatDescription?
-        let status = CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCVPixelFormatType_32BGRA,
-            width: Int32(width), height: Int32(height), extensions: nil, formatDescriptionOut: &description)
-        guard status == noErr, let description else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
-        format = description
+        format = try Self.taggedFormat(width: width, height: height)
         let attributes: [CFString: Any] = [kCVPixelBufferWidthKey: width, kCVPixelBufferHeightKey: height,
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferIOSurfacePropertiesKey: [:], kCVPixelBufferMetalCompatibilityKey: true]
@@ -40,6 +36,27 @@ final class StreamOutputRenderer {
         standby = slate
         context.render(CIImage(color: CIColor(red: 0.094, green: 0.094, blue: 0.094, alpha: 1)).cropped(to: bounds),
                        to: slate, bounds: bounds, colorSpace: colorSpace)
+        Self.tag(slate)
+    }
+
+    /// Output is sRGB, matching the app's processed frames and its preview.
+    /// Untagged BGRA is treated as Rec. 709 video by QuickTime and other
+    /// color-managed clients, which darkens midtones and looks oversaturated.
+    static let colorExtensions: [CFString: Any] = [
+        kCVImageBufferColorPrimariesKey: kCVImageBufferColorPrimaries_ITU_R_709_2,
+        kCVImageBufferTransferFunctionKey: kCVImageBufferTransferFunction_sRGB,
+    ]
+
+    static func taggedFormat(width: Int, height: Int) throws -> CMVideoFormatDescription {
+        var description: CMVideoFormatDescription?
+        let status = CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCVPixelFormatType_32BGRA,
+            width: Int32(width), height: Int32(height), extensions: colorExtensions as CFDictionary, formatDescriptionOut: &description)
+        guard status == noErr, let description else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        return description
+    }
+
+    private static func tag(_ buffer: CVPixelBuffer) {
+        for (key, value) in colorExtensions { CVBufferSetAttachment(buffer, key, value as CFTypeRef, .shouldPropagate) }
     }
 
     func render(_ input: CVPixelBuffer) -> CVPixelBuffer? {
@@ -59,6 +76,7 @@ final class StreamOutputRenderer {
                                                                   "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
         // CIContext.render is synchronous: no partially rendered surface is published.
         context.render(image, to: destination, bounds: bounds, colorSpace: colorSpace)
+        Self.tag(destination)
         return destination
     }
 }

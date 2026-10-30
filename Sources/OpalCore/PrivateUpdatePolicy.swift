@@ -5,6 +5,14 @@ public enum PrivateUpdatePolicy {
     public static let feedURL = URL(string: "https://api.github.com/repos/flowtricks/opal-app/contents/updates/appcast.xml?ref=main")!
     public static let credentialCheckURL = URL(string: "https://api.github.com/repos/flowtricks/opal-app/contents/README.md?ref=main")!
 
+    /// A release build may carry a read-only token in Info.plist (expanded from
+    /// OPAL_UPDATE_TOKEN at build time). Unexpanded or empty values are ignored.
+    public static func bundledToken(_ value: Any?) -> String? {
+        guard let token = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty, !token.contains("$("), !token.contains(where: { $0.isWhitespace }) else { return nil }
+        return token
+    }
+
     public static func isReleaseAsset(_ url: URL?) -> Bool {
         guard let url, url.scheme == "https", url.host == "api.github.com",
               url.user == nil, url.password == nil, url.port == nil,

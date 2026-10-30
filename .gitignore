@@ -34,3 +34,6 @@ research/lighting/*
 !research/lighting-followup/
 research/lighting-followup/*
 !research/lighting-followup/README.md
+
+# Read-only update token baked into release builds; never commit.
+Config/*.local

@@ -26,7 +26,7 @@ Each Mac must grant camera/microphone access as needed and approve **Opal Studio
 
 ## Private updates
 
-Build 18 and later update themselves with Sparkle. On each Mac, open Settings → Updates, create a fine-grained GitHub token limited to `flowtricks/opal-app` with Contents: Read-only, and connect. The token stays in that Mac's Keychain and is sent only to this repository's GitHub API endpoints. Updates download automatically and install once the camera, recordings, loops and tests are idle, or on quit. **Check for Updates** is in Settings → Updates and the app menu.
+Build 18 and later update themselves with Sparkle. Release builds include a read-only GitHub token (Contents: Read-only on `flowtricks/opal-app`), so recipients need no setup. It is read from the untracked `Config/update-token.local` when archiving and is never committed. Anyone with the app can extract it, which gives read access to this repository's contents; revoke and replace it if the app is shared beyond trusted people. A token entered in Settings → Updates is stored in that Mac's Keychain and takes precedence. Tokens are sent only to this repository's GitHub API endpoints. Updates download automatically and install once the camera, recordings, loops and tests are idle, or on quit. **Check for Updates** is in Settings → Updates and the app menu.
 
 To publish an update, package the notarized DMG, then run `scripts/publish-update.sh`. It signs the DMG with the Sparkle EdDSA key in the login Keychain (account `flowtricks-opal-studio`), uploads it to the build's GitHub release, and rewrites `updates/appcast.xml`. Commit and push that appcast to `main` to make the update live. Sparkle 2.10.0's command-line tools are expected in `build/sparkle-tools`.
 

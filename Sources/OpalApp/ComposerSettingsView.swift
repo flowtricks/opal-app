@@ -152,6 +152,19 @@ struct ComposerSettingsView: View {
                 }
             }.padding(.top, 4)
             Text(updater.status).font(.system(size: 11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+            if !updater.usingBuiltInAccess { tokenEntry }
+            Spacer(minLength: 0)
+            rule
+            toggle("Automatically install software updates", $updater.automatic).disabled(!updater.connected)
+            HStack {
+                Text("Installs when the camera is idle or you quit.").font(.system(size: 10)).foregroundStyle(faint)
+                Spacer()
+                Button(updater.checking ? "Checking…" : "Check for Updates") { updater.checkForUpdates() }
+                    .disabled(!updater.connected || updater.checking || updater.connecting)
+            }
+        }
+    }
+    @ViewBuilder private var tokenEntry: some View {
             HStack {
                 SecureField(updater.connected ? "Replace GitHub token (optional)" : "GitHub read-only token", text: $updateToken)
                     .textFieldStyle(.roundedBorder).font(.system(size: 11))
@@ -172,16 +185,6 @@ struct ComposerSettingsView: View {
                         .buttonStyle(.link).font(.system(size: 11)).disabled(updater.checking || updater.connecting)
                 }
             }
-            Spacer(minLength: 0)
-            rule
-            toggle("Automatically install software updates", $updater.automatic).disabled(!updater.connected)
-            HStack {
-                Text("Installs when the camera is idle or you quit.").font(.system(size: 10)).foregroundStyle(faint)
-                Spacer()
-                Button(updater.checking ? "Checking…" : "Check for Updates") { updater.checkForUpdates() }
-                    .disabled(!updater.connected || updater.checking || updater.connecting)
-            }
-        }
     }
     private var about: some View {
         VStack(alignment: .leading, spacing: 0) {

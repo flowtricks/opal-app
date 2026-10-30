@@ -12,6 +12,8 @@ final class PrivateUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     @Published private(set) var connecting = false
     @Published private(set) var status = "Connect this Mac to private updates."
     @Published private(set) var checking = false
+    /// True when this Mac uses the token built into the release, not its own.
+    @Published private(set) var usingBuiltInAccess = false
     @Published var automatic = UserDefaults.standard.object(forKey: "updates.automatic") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(automatic, forKey: "updates.automatic")
@@ -26,14 +28,19 @@ final class PrivateUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     private var idleTimer: AnyCancellable?
     private var attached = false
     private let service = "com.timothyricks.opal-app.private-updates"
+    private let builtInToken = PrivateUpdatePolicy.bundledToken(Bundle.main.object(forInfoDictionaryKey: "OpalUpdateToken"))
 
     func attach(studio: StudioModel) {
         self.studio = studio
         guard !attached else { return }
         attached = true
         do {
+            // A token saved on this Mac takes precedence over the built-in one.
             if let token = try readCredential() { try configure(token: token) }
-        } catch { status = "Unlock your Keychain or reconnect private updates in Settings." }
+            else { try useBuiltInAccess() }
+        } catch {
+            if (try? useBuiltInAccess()) == nil { status = "Unlock your Keychain or reconnect private updates in Settings." }
+        }
     }
 
     func connect(token input: String) async -> Bool {
@@ -80,6 +87,12 @@ final class PrivateUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         controller?.updater.automaticallyDownloadsUpdates = false
         controller?.updater.httpHeaders = [:]
         status = "Disconnected. Private updates are off on this Mac."
+        try? useBuiltInAccess()
+    }
+
+    private func useBuiltInAccess() throws {
+        guard let builtInToken else { return }
+        try configure(token: builtInToken, builtIn: true)
     }
 
     func checkForUpdates() {
@@ -89,8 +102,9 @@ final class PrivateUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         controller.checkForUpdates(nil)
     }
 
-    private func configure(token: String) throws {
+    private func configure(token: String, builtIn: Bool = false) throws {
         credential = token
+        usingBuiltInAccess = builtIn
         if controller == nil {
             controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
             controller?.updater.httpHeaders = headers(token: token)
@@ -108,7 +122,7 @@ final class PrivateUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
             controller?.updater.automaticallyChecksForUpdates = automatic
             controller?.updater.automaticallyDownloadsUpdates = automatic
         }
-        status = "Connected to private Flowtricks releases."
+        status = builtIn ? "Updates are set up. No sign-in is needed." : "Connected to private Flowtricks releases."
     }
 
     private func headers(token: String) -> [String: String] {

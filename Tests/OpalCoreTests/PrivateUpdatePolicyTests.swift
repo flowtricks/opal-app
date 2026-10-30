@@ -29,4 +29,13 @@ final class PrivateUpdatePolicyTests: XCTestCase {
                 consumerActive: flags[6], connectedWithUnknownDemand: flags[7]), mask == 0)
         }
     }
+
+    func testOnlyExpandedBundledTokensAreUsed() {
+        XCTAssertEqual(PrivateUpdatePolicy.bundledToken(" github_pat_abc123\n"), "github_pat_abc123")
+        XCTAssertNil(PrivateUpdatePolicy.bundledToken("$(OPAL_UPDATE_TOKEN)"), "Unexpanded build setting")
+        XCTAssertNil(PrivateUpdatePolicy.bundledToken(""), "Development builds have no token")
+        XCTAssertNil(PrivateUpdatePolicy.bundledToken("two words"))
+        XCTAssertNil(PrivateUpdatePolicy.bundledToken(nil))
+        XCTAssertNil(PrivateUpdatePolicy.bundledToken(42))
+    }
 }

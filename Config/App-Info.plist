@@ -59,6 +59,8 @@
 			</dict>
 		</dict>
 	</array>
+	<key>OpalUpdateToken</key>
+	<string>$(OPAL_UPDATE_TOKEN)</string>
 	<key>SUFeedURL</key>
 	<string>https://api.github.com/repos/flowtricks/opal-app/contents/updates/appcast.xml?ref=main</string>
 	<key>SUPublicEDKey</key>

@@ -172,6 +172,24 @@
 			<key>fileRef</key>
 			<string>DFB1ADB1110001E47FFE43C8</string>
 		</dict>
+		<key>3A5914134AEC1A0726C28634</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>PrivateUpdater.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>EBE0001254FE9AC336ADA7DB</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>3A5914134AEC1A0726C28634</string>
+		</dict>
 		<key>74D07366AEA31DD284A65DF3</key>
 		<dict>
 			<key>isa</key>
@@ -337,6 +355,7 @@
 				<string>FB29132C7688632C8D9E8C82</string>
 				<string>CD8E3F836FBB1BFBDF8CC4C2</string>
 				<string>DFB1ADB1110001E47FFE43C8</string>
+				<string>3A5914134AEC1A0726C28634</string>
 				<string>74D07366AEA31DD284A65DF3</string>
 				<string>EAB4B854C5F99093FF807EC9</string>
 				<string>211E810ACF69DF576C2A89A7</string>
@@ -638,6 +657,36 @@
 			<string>PBXBuildFile</string>
 			<key>productRef</key>
 			<string>2CF32BC8C5ACEA3ECBD81012</string>
+		</dict>
+		<key>A2EC3239B617A789F8B083AD</key>
+		<dict>
+			<key>isa</key>
+			<string>XCRemoteSwiftPackageReference</string>
+			<key>repositoryURL</key>
+			<string>https://github.com/sparkle-project/Sparkle</string>
+			<key>requirement</key>
+			<dict>
+				<key>kind</key>
+				<string>exactVersion</string>
+				<key>version</key>
+				<string>2.10.0</string>
+			</dict>
+		</dict>
+		<key>1F0BAF92D1F5920169A7F845</key>
+		<dict>
+			<key>isa</key>
+			<string>XCSwiftPackageProductDependency</string>
+			<key>package</key>
+			<string>A2EC3239B617A789F8B083AD</string>
+			<key>productName</key>
+			<string>Sparkle</string>
+		</dict>
+		<key>27B8A4EC0AB564CDC9514B74</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>productRef</key>
+			<string>1F0BAF92D1F5920169A7F845</string>
 		</dict>
 		<key>6749CED57BFF58B7DA2BA375</key>
 		<dict>
@@ -1030,6 +1079,7 @@
 				<string>2B8190D0685DFBF5F5E9943B</string>
 				<string>9F4030C3F779927406B5A9E8</string>
 				<string>935101525E5F4B994DA055E4</string>
+				<string>EBE0001254FE9AC336ADA7DB</string>
 				<string>FAD098277564BF342DD9B13E</string>
 				<string>F20121B2A95A5B2DB8F71E78</string>
 				<string>BAB20680060F6F7BF3015A5D</string>
@@ -1069,6 +1119,7 @@
 				<string>7A8462EF0346A1418F979811</string>
 				<string>B003558A31E8E3B43F5FF01E</string>
 				<string>A1E7A35401F72FDA8F292950</string>
+				<string>27B8A4EC0AB564CDC9514B74</string>
 			</array>
 			<key>runOnlyForDeploymentPostprocessing</key>
 			<string>0</string>
@@ -1284,7 +1335,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string>DEBUG</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>17</string>
+				<string>18</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1347,7 +1398,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string></string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>17</string>
+				<string>18</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1448,7 +1499,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string>DEBUG</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>17</string>
+				<string>18</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1511,7 +1562,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string></string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>17</string>
+				<string>18</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1588,6 +1639,7 @@
 				<string>361FA6561D4422A2BF5E27E9</string>
 				<string>B2BA5C59BCE3446F91036BE5</string>
 				<string>2CF32BC8C5ACEA3ECBD81012</string>
+				<string>1F0BAF92D1F5920169A7F845</string>
 			</array>
 		</dict>
 		<key>DD552121ED5263B36102189A</key>
@@ -1625,7 +1677,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string>DEBUG</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>17</string>
+				<string>18</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1690,7 +1742,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string></string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>17</string>
+				<string>18</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1916,6 +1968,7 @@
 			<key>packageReferences</key>
 			<array>
 				<string>BE9AD54601022DCC6177AF8B</string>
+				<string>A2EC3239B617A789F8B083AD</string>
 			</array>
 		</dict>
 	</dict>

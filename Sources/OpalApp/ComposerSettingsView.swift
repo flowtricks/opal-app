@@ -6,6 +6,8 @@ import OpalCore
 struct ComposerSettingsView: View {
     @ObservedObject var studio: StudioModel
     @ObservedObject var lifecycle: StudioLifecycle
+    @ObservedObject var updater: PrivateUpdater
+    @State private var updateToken = ""
     @ObservedObject var camera: CameraEngine
     @ObservedObject var c1: C1Controller
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -139,16 +141,46 @@ struct ComposerSettingsView: View {
         Menu(content: content) { HStack { Text(value); Spacer(); Image(systemName: "chevron.up.chevron.down").font(.system(size: 12, weight: .semibold)) }.padding(.horizontal, 8).frame(height: 26).background(Color(white: 0.15), in: RoundedRectangle(cornerRadius: 4)).overlay(RoundedRectangle(cornerRadius: 4).stroke(.white.opacity(0.06))) }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
     }
     private var updates: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 12) {
             heading("Software updates")
-            VStack(spacing: 22) {
-                resource("ComposerDisabledIcon").resizable().scaledToFit().frame(width: 130, height: 130)
-                VStack(spacing: 5) { Text("Local build").font(.system(size: 20)); Text("Version \(version) · No update service configured.").font(.system(size: 11)).foregroundStyle(muted) }
-            }.frame(maxWidth: .infinity).padding(.top, 35)
-            Spacer()
+            HStack(spacing: 16) {
+                resource("ComposerDisabledIcon").resizable().scaledToFit().frame(width: 58, height: 58)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Opal Studio").font(.system(size: 20))
+                    Text("Version \(version) · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
+                        .font(.system(size: 11)).foregroundStyle(muted)
+                }
+            }.padding(.top, 4)
+            Text(updater.status).font(.system(size: 11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                SecureField(updater.connected ? "Replace GitHub token (optional)" : "GitHub read-only token", text: $updateToken)
+                    .textFieldStyle(.roundedBorder).font(.system(size: 11))
+                    .disabled(updater.connecting || updater.checking)
+                Button(updater.connecting ? "Connecting…" : "Connect") {
+                    Task { if await updater.connect(token: updateToken) { updateToken = "" } }
+                }.disabled(updateToken.isEmpty || updater.connecting || updater.checking)
+            }
+            Text("Use a fine-grained token: Flowtricks → opal-app → Contents: Read-only. It stays in this Mac’s Keychain.")
+                .font(.system(size: 10)).foregroundStyle(faint).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Create GitHub Token…") {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/settings/personal-access-tokens/new")!)
+                }.buttonStyle(.link).font(.system(size: 11))
+                Spacer()
+                if updater.connected {
+                    Button("Disconnect") { updater.disconnect(); updateToken = "" }
+                        .buttonStyle(.link).font(.system(size: 11)).disabled(updater.checking || updater.connecting)
+                }
+            }
+            Spacer(minLength: 0)
             rule
-            toggle("Automatically install software updates", .constant(false)).disabled(true).padding(.top, 14)
-            HStack { Text("Check for updates"); Spacer(); menu("Unavailable") { Text("No update service configured") }.frame(width: 124).disabled(true) }.font(.system(size: 12)).foregroundStyle(muted).padding(.top, 9)
+            toggle("Automatically install software updates", $updater.automatic).disabled(!updater.connected)
+            HStack {
+                Text("Installs when the camera is idle or you quit.").font(.system(size: 10)).foregroundStyle(faint)
+                Spacer()
+                Button(updater.checking ? "Checking…" : "Check for Updates") { updater.checkForUpdates() }
+                    .disabled(!updater.connected || updater.checking || updater.connecting)
+            }
         }
     }
     private var about: some View {

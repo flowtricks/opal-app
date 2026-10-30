@@ -36,7 +36,7 @@ def build_settings(target, debug):
         ENABLE_HARDENED_RUNTIME='YES', ONLY_ACTIVE_ARCH='YES' if debug else 'NO', CLANG_ENABLE_MODULES='YES', ENABLE_USER_SCRIPT_SANDBOXING='YES',
         SWIFT_OPTIMIZATION_LEVEL='-Onone' if debug else '-O', DEBUG_INFORMATION_FORMAT='dwarf' if debug else 'dwarf-with-dsym',
         SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG' if debug else '',
-        CURRENT_PROJECT_VERSION='17', MARKETING_VERSION='0.1.0')
+        CURRENT_PROJECT_VERSION='18', MARKETING_VERSION='0.1.0')
     if target == 'app':
         values.update(PRODUCT_BUNDLE_IDENTIFIER='com.timothyricks.opal-app', PRODUCT_NAME='OpalStudio',
             INFOPLIST_FILE='Config/App-Info.plist', CODE_SIGN_ENTITLEMENTS='Config/App.entitlements',
@@ -92,6 +92,10 @@ for product in ['OpalCore','CameraBridge','C1API']:
     dep=add('package product '+product,'XCSwiftPackageProductDependency', package=package, productName=product)
     package_products.append(dep)
     package_links.append(add('link '+product,'PBXBuildFile', productRef=dep))
+sparkle_package=add('SparklePackage','XCRemoteSwiftPackageReference', repositoryURL='https://github.com/sparkle-project/Sparkle', requirement={'kind':'exactVersion','version':'2.10.0'})
+sparkle_product=add('SparkleProduct','XCSwiftPackageProductDependency', package=sparkle_package, productName='Sparkle')
+package_products.append(sparkle_product)
+package_links.append(add('LinkSparkle','PBXBuildFile', productRef=sparkle_product))
 c1_refs=[]
 c1_builds=[]
 for library in ['libC1Bridge.dylib','libdepthai-core.dylib','libusb-1.0.dylib']:
@@ -140,7 +144,7 @@ main_group=add('MainGroup','PBXGroup', sourceTree='<group>', children=main_child
 project=add('Project','PBXProject', attributes={'BuildIndependentTargetsInParallel':'YES','LastUpgradeCheck':'2600',
               'TargetAttributes':{app_target:{'CreatedOnToolsVersion':'26.0','DevelopmentTeam':'G766RX9X84','ProvisioningStyle':'Automatic','SystemCapabilities':{'com.apple.SystemExtension':{'enabled':1},'com.apple.Sandbox':{'enabled':1},'com.apple.ApplicationGroups':{'enabled':1}}}, ext_target:{'CreatedOnToolsVersion':'26.0','DevelopmentTeam':'G766RX9X84','ProvisioningStyle':'Automatic','SystemCapabilities':{'com.apple.Sandbox':{'enabled':1},'com.apple.ApplicationGroups':{'enabled':1}}}}},
             buildConfigurationList=configurations('Project'), compatibilityVersion='Xcode 14.0', developmentRegion='en', hasScannedForEncodings='0', knownRegions=['en','Base'],
-            mainGroup=main_group, productRefGroup=products_group, projectDirPath='', projectRoot='', targets=[app_target,ext_target,launch_target], packageReferences=[package])
+            mainGroup=main_group, productRefGroup=products_group, projectDirPath='', projectRoot='', targets=[app_target,ext_target,launch_target], packageReferences=[package,sparkle_package])
 project_dir=ROOT/'OpalStudio.xcodeproj'
 project_dir.mkdir(exist_ok=True)
 with (project_dir/'project.pbxproj').open('wb') as f:

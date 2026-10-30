@@ -7,18 +7,19 @@ struct OpalStudioApp: App {
     @NSApplicationDelegateAdaptor(StudioAppDelegate.self) private var appDelegate
     @StateObject private var studio = StudioModel()
     @StateObject private var lifecycle = StudioLifecycle()
+    @StateObject private var updater = PrivateUpdater()
     var body: some Scene {
         Window("Opal Studio", id: "main") {
             ComposerView(studio: studio, lifecycle: lifecycle, camera: studio.camera, bridge: studio.bridge, loop: studio.loop, c1: studio.c1, stockFocus: studio.stockFocus, verifier: studio.verifier, transportTest: studio.transportTest)
                 .preferredColorScheme(.dark)
-                .onAppear { appDelegate.studio = studio; appDelegate.lifecycle = lifecycle }
+                .onAppear { appDelegate.studio = studio; appDelegate.lifecycle = lifecycle; updater.attach(studio: studio) }
         }
         .defaultSize(width: 1172, height: 780)
         .windowStyle(.hiddenTitleBar)
-        .commands { StudioCommands(studio: studio) }
+        .commands { StudioCommands(studio: studio, updater: updater) }
         Window("Record", id: "recording") { RecordingOptionsView(studio: studio) }.windowResizability(.contentSize).windowStyle(.hiddenTitleBar)
         Window("Settings", id: "settings") {
-            ComposerSettingsView(studio: studio, lifecycle: lifecycle, camera: studio.camera, c1: studio.c1)
+            ComposerSettingsView(studio: studio, lifecycle: lifecycle, updater: updater, camera: studio.camera, c1: studio.c1)
         }.windowResizability(.contentSize).windowStyle(.hiddenTitleBar)
     }
 }

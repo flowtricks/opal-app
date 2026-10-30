@@ -17,7 +17,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>17</string>
+	<string>18</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSMultipleInstancesProhibited</key>
@@ -59,5 +59,21 @@
 			</dict>
 		</dict>
 	</array>
+	<key>SUFeedURL</key>
+	<string>https://api.github.com/repos/flowtricks/opal-app/contents/updates/appcast.xml?ref=main</string>
+	<key>SUPublicEDKey</key>
+	<string>OnUkP0WI+wR1OJQWTNQ0lQOEiSRG0fVW70Ow7REqJwU=</string>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUShowReleaseNotes</key>
+	<false/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SUSendProfileInfo</key>
+	<false/>
 </dict>
 </plist>

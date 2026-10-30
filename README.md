@@ -24,6 +24,12 @@ The accepted, notarized build is [0.1.0 (17)](https://github.com/flowtricks/opal
 
 Each Mac must grant camera/microphone access as needed and approve **Opal Studio Camera** in System Settings → General → Login Items & Extensions → Camera Extensions. Set login and camera-plug-in launch preferences in Settings → General. Avoid leaving Composer's own camera connection active at the same time.
 
+## Private updates
+
+Build 18 and later update themselves with Sparkle. On each Mac, open Settings → Updates, create a fine-grained GitHub token limited to `flowtricks/opal-app` with Contents: Read-only, and connect. The token stays in that Mac's Keychain and is sent only to this repository's GitHub API endpoints. Updates download automatically and install once the camera, recordings, loops and tests are idle, or on quit. **Check for Updates** is in Settings → Updates and the app menu.
+
+To publish an update, package the notarized DMG, then run `scripts/publish-update.sh`. It signs the DMG with the Sparkle EdDSA key in the login Keychain (account `flowtricks-opal-studio`), uploads it to the build's GitHub release, and rewrites `updates/appcast.xml`. Commit and push that appcast to `main` to make the update live. Sparkle 2.10.0's command-line tools are expected in `build/sparkle-tools`.
+
 ## Build and release
 
 Requires macOS 14 or later and Xcode. The universal distribution includes stock UVC capture/control and excludes the experimental ARM-only DepthAI runtime. This keeps ordinary installation independent of firmware loading and third-party SDK binaries.

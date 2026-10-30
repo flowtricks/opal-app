@@ -15,11 +15,18 @@ enum StudioViewCommand {
 struct StudioCommands: Commands {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var studio: StudioModel
+    @ObservedObject var updater: PrivateUpdater
     @ObservedObject private var camera: CameraEngine
     @ObservedObject private var loop: LoopController
-    init(studio: StudioModel) { self.studio = studio; camera = studio.camera; loop = studio.loop }
+    init(studio: StudioModel, updater: PrivateUpdater) { self.studio = studio; self.updater = updater; camera = studio.camera; loop = studio.loop }
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                if updater.connected { updater.checkForUpdates() }
+                else { UserDefaults.standard.set("Updates", forKey: "composer.settingsTab"); openWindow(id: "settings") }
+            }.disabled(updater.checking || updater.connecting)
+        }
         CommandGroup(replacing: .appSettings) {
             Button("Settings…") { openWindow(id: "settings") }.keyboardShortcut(",")
         }

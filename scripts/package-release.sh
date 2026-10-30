@@ -3,8 +3,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+ARCHIVE="${1:-build/OpalStudio.xcarchive}"
 EXPORT_DIR=$(mktemp -d "$ROOT/build/notarized.XXXXXX")
-xcodebuild -exportNotarizedApp -archivePath build/OpalStudio.xcarchive \
+xcodebuild -exportNotarizedApp -archivePath "$ARCHIVE" \
   -exportPath "$EXPORT_DIR"
 APP="$EXPORT_DIR/OpalStudio.app"
 codesign --verify --deep --strict "$APP"

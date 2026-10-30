@@ -1,5 +1,7 @@
 # Build 17: native control mapping and mask boundary corrections
 
+Final distribution status (October 30, 2026): Apple notarization succeeded through Xcode Organizer after the command-line uploader continued to report “No Accounts.” The exported build17 app has a valid stapled ticket and Gatekeeper reports `accepted`, `source=Notarized Developer ID`. All three executables include Intel and Apple Silicon architectures. The signed final DMG was mounted read-only, its enclosed build17 app passed deep signature verification, stapler validation and Gatekeeper assessment, and its Applications shortcut was verified. Earlier checkpoints below document the investigation chronologically and are superseded by this result.
+
 The user's live build16 comparison disproved whole-pipeline equivalence despite passing individual shader comparisons. Studio appeared too red, softer, and had a more noticeable shoulder outline. Both applications were showing 720p; Composer used manual focus0.5m while Studio used autofocus, so sharpness comparisons also require matched focus.
 
 ## Proven hue error

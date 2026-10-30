@@ -1335,7 +1335,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string>DEBUG</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>19</string>
+				<string>20</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1398,7 +1398,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string></string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>19</string>
+				<string>20</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1499,7 +1499,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string>DEBUG</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>19</string>
+				<string>20</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1562,7 +1562,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string></string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>19</string>
+				<string>20</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1677,7 +1677,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string>DEBUG</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>19</string>
+				<string>20</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
@@ -1742,7 +1742,7 @@
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
 				<string></string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>19</string>
+				<string>20</string>
 				<key>MARKETING_VERSION</key>
 				<string>0.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>

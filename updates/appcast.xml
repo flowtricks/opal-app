@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Opal Studio</title>
+    <item>
+      <title>Opal Studio 0.1.0 (18)</title>
+      <pubDate>Fri, 30 Oct 2026 11:00:42 +0000</pubDate>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://api.github.com/repos/flowtricks/opal-app/releases/assets/691829328" type="application/octet-stream" sparkle:edSignature="AGSVxClra8LxVF12+f+aCil7G0+jL6nW4Qs1bzkQdtF5mySs600fwtGHwPgxz4hDanYNe0B909ukB/hAfQrJDw==" length="10655593" />
+    </item>
+  </channel>
+</rss>

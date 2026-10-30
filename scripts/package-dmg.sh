@@ -29,8 +29,8 @@ Opal Studio — macOS 14 or later
 1. Drag Opal Studio into Applications.
 2. Eject this disk image and open Opal Studio from Applications.
 3. Grant Camera access when macOS asks.
-4. For meeting output, open Settings → Video → Advanced in Opal Studio,
-   install its camera extension, and enable Opal Studio Camera in
+4. For meeting output, open Settings → Video in Opal Studio, click
+   Install Camera Extension, and enable Opal Studio Camera in
    System Settings → General → Login Items & Extensions → Camera Extensions.
 5. Select Opal Studio Camera in Zoom, Google Meet, or your other camera app.
 

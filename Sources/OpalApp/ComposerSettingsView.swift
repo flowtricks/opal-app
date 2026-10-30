@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import OpalCore
+import CameraBridge
 
 /// Measured against the installed Composer settings window (768 × 476 points).
 struct ComposerSettingsView: View {
@@ -132,7 +133,11 @@ struct ComposerSettingsView: View {
             }.frame(width: 146).disabled(!studio.useC1Hardware || !c1.isRunning) }.padding(.top, 7)
             toggle("Pause video when not streaming", $studio.pauseWhenNotStreaming).padding(.top, 3)
             Spacer(minLength: 0)
-            Button("Advanced…") { StudioViewCommand.send(StudioViewCommand.advancedSettings) }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(faint).frame(maxWidth: .infinity, alignment: .trailing)
+            HStack(spacing: 10) {
+                VirtualCameraSetup(bridge: studio.bridge, lifecycle: lifecycle, faint: faint, accent: accent)
+                Spacer(minLength: 8)
+                Button("Advanced…") { StudioViewCommand.send(StudioViewCommand.advancedSettings) }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(faint)
+            }
         }.font(.system(size: 12)).foregroundStyle(muted)
     }
     private func resolutionColor(_ resolution: CameraResolution) -> Color { resolution.width > 1920 ? Color(red: 1, green: 0.24, blue: 0.28) : accent }
@@ -243,5 +248,26 @@ private struct SettingsHelpButton: View {
                 .background(.white.opacity(0.04), in: Circle()).overlay(Circle().stroke(.white.opacity(0.04)))
         }.buttonStyle(.plain).accessibilityLabel("Help")
             .popover(isPresented: $showing) { Text(text).font(.system(size: 11)).foregroundStyle(.white.opacity(0.7)).padding(16).frame(width: 270).fixedSize(horizontal: false, vertical: true).background(Color(white: 0.15)) }
+    }
+}
+
+/// Each Mac installs and approves the camera extension once before
+/// Opal Studio Camera appears in QuickTime, Meet or Zoom. Installing again
+/// replaces an older extension after an app update.
+private struct VirtualCameraSetup: View {
+    @ObservedObject var bridge: VirtualCameraBridge
+    @ObservedObject var lifecycle: StudioLifecycle
+    let faint: Color, accent: Color
+    var body: some View {
+        Button("Install Camera Extension") { bridge.activate() }
+            .font(.system(size: 11))
+            .help("Install once on each Mac (and again after updates), then turn on Opal Studio Camera in System Settings → General → Login Items & Extensions → Camera Extensions. Quit and reopen your meeting app afterwards.")
+        if bridge.status.hasPrefix("Allow") {
+            Button("Open System Settings…") { lifecycle.openLoginItemsSettings() }
+                .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(accent).help(bridge.status)
+        } else {
+            Text(bridge.status).font(.system(size: 10)).foregroundStyle(faint)
+                .lineLimit(1).truncationMode(.tail).help(bridge.status)
+        }
     }
 }

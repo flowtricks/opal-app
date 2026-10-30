@@ -3,12 +3,12 @@
   <channel>
     <title>Opal Studio</title>
     <item>
-      <title>Opal Studio 0.1.0 (19)</title>
-      <pubDate>Fri, 30 Oct 2026 11:20:50 +0000</pubDate>
-      <sparkle:version>19</sparkle:version>
+      <title>Opal Studio 0.1.0 (20)</title>
+      <pubDate>Fri, 30 Oct 2026 12:05:30 +0000</pubDate>
+      <sparkle:version>20</sparkle:version>
       <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://api.github.com/repos/flowtricks/opal-app/releases/assets/691884488" type="application/octet-stream" sparkle:edSignature="9nlI6NaHBcek5IOoehjxdBCsf4qzwI7eJCZMeLFMjhHHztjA4caeDKdEvfm2RGXsRIhdjBzWBSq+3QLZyFlWCA==" length="10674182" />
+      <enclosure url="https://api.github.com/repos/flowtricks/opal-app/releases/assets/691999875" type="application/octet-stream" sparkle:edSignature="48NXosQ1TUdcvnmqGEVWyEmWcgtmK8neMv6/s/985yS5767qR4dNB8uCJKA5rwoDqh8buAU5jOKyGvlcGGv1CA==" length="10688187" />
     </item>
   </channel>
 </rss>
